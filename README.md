@@ -20,20 +20,20 @@ Requires `IEEEtran.cls` (included) and standard LaTeX packages.
 ## Repository Structure
 
 ```
-MAGNN-Github/
-|-- paper.tex              # Main LaTeX source
-|-- figures/               # All figures used in the paper
-|   |-- architecture.pdf   # MGNN architecture overview
-|   |-- roc.pdf            # ROC curves on three benchmarks
-|   |-- fig3_nature_final.pdf  # Case study: heterogeneous graph
-|   |-- attention.pdf      # Attention weight analysis
-|   |-- per_attack.pdf     # Per-attack F1 comparison
-|   |-- sota_tradeoff.pdf  # SOTA trade-off comparison
-|   |-- dimension.pdf      # Hyperparameter sensitivity
-|   |-- scalability.pdf    # Efficiency and scalability
-|   |-- convergence.pdf    # Training convergence
-|   |-- tsne.pdf           # t-SNE visualization
-|-- IEEEtran/              # IEEE conference template files
+MGNN/
+|-- paper.tex                        # Main LaTeX source
+|-- figures/                         # All figures used in the paper
+|   |-- fig_architecture.pdf         # MGNN architecture overview
+|   |-- fig_roc_curves.pdf           # ROC curves on three benchmarks
+|   |-- fig_ablation_study.pdf       # Ablation study (component, fusion, loss, edge type)
+|   |-- fig_attention_analysis.pdf   # Attention weight analysis
+|   |-- fig_per_attack_comparison.pdf # Per-attack F1 comparison
+|   |-- fig_sota_tradeoff.pdf        # SOTA F1-FPR trade-off comparison
+|   |-- fig_hyperparameter_sensitivity.pdf # Hyperparameter sensitivity
+|   |-- fig_scalability.pdf          # Efficiency and scalability
+|   |-- fig_training_convergence.pdf # Training convergence
+|   |-- fig_tsne_visualization.pdf   # t-SNE embedding visualization
+|-- IEEEtran/                        # IEEE conference template files
 ```
 
 ## Datasets
