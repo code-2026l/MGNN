@@ -28,7 +28,7 @@ def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256, hidden=128):
     Uses preprocessed .pt data if available, otherwise falls back
     to synthetic data.
     """
-    from src.data.download import load_pt_data
+    from src.data.dataset import load_pt_data
     from src.data.synthetic import make_synthetic_seqstat_data
 
     results = {}

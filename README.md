@@ -18,7 +18,7 @@ MGNN/
 │   │   ├── mgnn.py              # MGNN: three-view fusion with GAT
 │   │   └── baselines.py         # GCN, GraphSAGE, EGraphSAGE
 │   ├── data/
-│   │   ├── download.py          # Dataset download & CSV preprocessing
+│   │   ├── dataset.py           # Dataset download & CSV preprocessing
 │   │   └── synthetic.py         # Synthetic data generators
 │   └── utils/
 │       ├── config.py            # Argument parsing & device setup
@@ -74,7 +74,7 @@ and runs both Table 3 and Table 6 experiments.
 1. Download CSVs from the links above and place them in `data/raw/`
 2. Run preprocessing:
    ```python
-   from src.data.download import preprocess_cic_csv
+   from src.data.dataset import preprocess_cic_csv
    data = preprocess_cic_csv(file_paths, data_dir='data')
    ```
 

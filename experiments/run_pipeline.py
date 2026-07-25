@@ -49,7 +49,7 @@ def main():
 
     # Step 1: Download datasets
     if not args.skip_download:
-        from src.data.download import download_cic_ids2017, preprocess_cic_csv
+        from src.data.dataset import download_cic_ids2017, preprocess_cic_csv
         cic_files = download_cic_ids2017(args.data_dir)
         if cic_files:
             data = preprocess_cic_csv(cic_files, args.data_dir)
