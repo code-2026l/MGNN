@@ -1,4 +1,23 @@
-# LaTeX auxiliary files
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Data files
+*.pt
+*.pcap
+*.csv
+
+# Results / checkpoints
+results/
+checkpoints/
+*.pth
+*.json
+
+# LaTeX auxiliary
 *.aux
 *.bbl
 *.blg
@@ -20,13 +39,18 @@
 Thumbs.db
 desktop.ini
 
-# Editor files
+# Editor
 *.swp
 *.swo
 *~
 .vscode/
 .idea/
 
-# Python
-__pycache__/
-*.pyc
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
