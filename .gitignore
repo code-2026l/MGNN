@@ -57,3 +57,6 @@ env/
 
 # Paper figures (kept only in the paper PDF, not in the code repo)
 /figures/
+
+# LaTeX template (not needed for code reproduction)
+/IEEEtran/
