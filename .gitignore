@@ -54,3 +54,6 @@ env/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Paper figures (kept only in the paper PDF, not in the code repo)
+/figures/
