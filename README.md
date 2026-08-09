@@ -1,10 +1,9 @@
 # MGNN: Multi-View Graph Neural Network for Encrypted Traffic Anomaly Detection
 
-Official implementation of the paper:
-
-> **MGNN: Multi-View Graph Neural Network for Encrypted Traffic Anomaly Detection**
+Official implementation of the paper submitted to *Expert Systems* (Wiley), Special Issue "Computer Applications Frontiers".
 
 MGNN detects coordinated attacks in encrypted traffic by fusing three views:
+
 - **Sequence view**: BiLSTM encoder over packet-length sequences
 - **Statistical view**: MLP encoder over distributional flow features
 - **Interaction view**: GAT encoder over a k-NN graph of flow embeddings
@@ -25,9 +24,9 @@ MGNN/
 │       ├── metrics.py           # Evaluation: P/R/F1/FPR/MCC/AUC
 │       └── training.py          # Training & evaluation loops
 ├── experiments/
-│   ├── run_table3.py            # Table 3: Graph model comparison
-│   ├── run_table6.py            # Table 6: Fusion strategy comparison
-│   └── run_pipeline.py          # End-to-end: download + preprocess + both tables
+│   ├── run_table3.py            # Main results: MGNN vs graph baselines
+│   ├── run_table6.py            # Fusion strategy comparison
+│   └── run_pipeline.py          # End-to-end: download + preprocess + experiments
 ├── figures/                     # Paper figures
 ├── requirements.txt             # Python dependencies
 ├── LICENSE                      # MIT License
@@ -43,12 +42,11 @@ MGNN/
 
 Install dependencies:
 
-```bash
+```
 pip install -r requirements.txt
 ```
 
-For graph models, additionally install PyTorch Geometric following the
-[official instructions](https://pytorch-geometric.readthedocs.io/).
+For graph models, additionally install PyTorch Geometric following the [official instructions](https://pytorch-geometric.readthedocs.io/).
 
 ## Datasets
 
@@ -56,24 +54,24 @@ Experiments use three publicly available benchmark datasets:
 
 | Dataset | Size (flows) | Attack types | Source |
 |---------|-------------|--------------|--------|
-| CIC-IDS2017 | 2.83M | 15 | [UNB](https://www.unb.ca/cic/datasets/ids-2017.html) |
-| UNSW-NB15 | 257K | 9 | [UNSW](https://www.unsw.adfa.edu.au/unsw-canberra-cyber/cybersecurity/ADFA-NB15-Datasets/) |
-| CSE-CIC-IDS2018 | 16.23M | 14 | [UNB](https://www.unb.ca/cic/datasets/ids-2018.html) |
+| CIC-IDS2017 | 2.83M | 14 | [UNB](https://www.unb.ca/cic/datasets/ids-2017.html) |
+| UNSW-NB15 | 2.54M | 9 | [UNSW](https://www.unsw.adfa.edu.au/unsw-canberra-cyber/cybersecurity/ADFA-NB15-Datasets/) |
+| CSE-CIC-IDS2018 | 16.23M | 15 | [UNB](https://www.unb.ca/cic/datasets/ids-2018.html) |
 
 ### Automatic download
 
-```bash
+```
 python experiments/run_pipeline.py
 ```
 
-This downloads CIC-IDS2017 CSV files, preprocesses them into `.pt` format,
-and runs both Table 3 and Table 6 experiments.
+This downloads CIC-IDS2017 CSV files, preprocesses them into `.pt` format, and runs the experiments.
 
 ### Manual data preparation
 
 1. Download CSVs from the links above and place them in `data/raw/`
 2. Run preprocessing:
-   ```python
+
+   ```
    from src.data.dataset import preprocess_cic_csv
    data = preprocess_cic_csv(file_paths, data_dir='data')
    ```
@@ -84,17 +82,17 @@ Alternatively, place preprocessed `.pt` files directly in `data/`.
 
 ### Run all experiments
 
-```bash
+```
 python experiments/run_pipeline.py --all
 ```
 
-### Run specific tables
+### Run specific experiments
 
-```bash
-# Fusion strategy comparison (Table 6)
+```
+# Fusion strategy comparison (concat / avg / attn / attn_align)
 python experiments/run_table6.py --runs 5 --epochs 30
 
-# Graph model comparison (Table 3, uses synthetic graph data)
+# Main results: MGNN vs graph baselines (uses synthetic graph data)
 python experiments/run_table3.py --runs 5 --epochs 100
 ```
 
@@ -119,6 +117,7 @@ MGNN fuses three heterogeneous views:
 3. **Interaction view**: Multi-head GAT on k-NN graph of flow features
 
 Four fusion strategies are supported:
+
 - `concat`: Concatenate all three view representations
 - `avg`: Average all three views
 - `attn`: Learnable cross-view attention weights
@@ -126,12 +125,16 @@ Four fusion strategies are supported:
 
 ## Citation
 
-```bibtex
-@inproceedings{mgnn2025,
+This work is currently under review at *Expert Systems*. Please cite this repository as:
+
+```
+@misc{mgnn2026,
   title={MGNN: Multi-View Graph Neural Network for Encrypted Traffic Anomaly Detection},
-  author={Anonymous},
-  booktitle={IEEE Conference},
-  year={2025}
+  author={Ding, Wei and Zhou, Run and Liao, Rong and Wang, Yuxiang and Fan, Rui and Yan, Ruiyang and Hao, Shuang and Yin, Feifei and Cao, Di},
+  howpublished={GitHub repository},
+  year={2026},
+  note={Under review at Expert Systems},
+  url={https://github.com/code-2026l/MGNN}
 }
 ```
 
