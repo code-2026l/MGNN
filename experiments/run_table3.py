@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Table 3: Graph-based model comparison.
+Graph-based model comparison.
 
 Compares GCN, GraphSAGE, and EGraphSAGE on synthetic graph data
 (or real graph data if available).
@@ -59,7 +59,7 @@ def run_table3(device, runs=5, epochs=100):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Table 3: Graph model comparison')
+    parser = argparse.ArgumentParser(description='Graph model comparison')
     add_common_args(parser)
     parser.add_argument('--epochs', type=int, default=100,
                         help='Training epochs per run.')
