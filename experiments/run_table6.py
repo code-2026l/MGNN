@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Table 6: MGNN fusion strategy comparison.
+MGNN fusion strategy comparison.
 
 Compares four fusion strategies (concat, avg, attn, attn_align)
 on sequence+stat view data. Reports F1 and FPR.
@@ -81,7 +81,7 @@ def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256, hidden=128):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Table 6: Fusion strategy comparison')
+    parser = argparse.ArgumentParser(description='Fusion strategy comparison')
     add_common_args(parser)
     args = parser.parse_args()
     device = parse_device(args)
