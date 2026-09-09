@@ -174,13 +174,34 @@ class MGNN(nn.Module):
             weights = F.softmax(scores, dim=1)
             return torch.sum(weights.unsqueeze(-1) * views, dim=1), weights
 
-    def forward(self, seq, stat):
+    def encode_and_fuse(self, seq, stat):
+        """Encode all three views once and return (views, fused_hidden).
+
+        views: (B, 3, hidden) stacked representations.
+        fused_hidden: (B, dim) pre-classifier fusion result.
+        Arranged so a single encoder pass serves the classifier, the
+        decision-boundary regularizer, and the alignment loss together,
+        avoiding the redundant forward passes that starve the GPU.
+        """
         h_seq, h_stat, h_inter = self.encode_views(seq, stat)
-        if self.fusion in ('attn', 'attn_align'):
+        views = torch.stack([h_seq, h_stat, h_inter], dim=1)
+        if self.fusion == 'concat':
+            h = torch.cat([h_seq, h_stat, h_inter], dim=-1)
+        elif self.fusion == 'avg':
+            h = (h_seq + h_stat + h_inter) / 3.0
+        else:  # attn / attn_align
             h, _ = self.fuse_views(h_seq, h_stat, h_inter)
-        else:
-            h = self.fuse_views(h_seq, h_stat, h_inter)
+        return views, h
+
+    def forward(self, seq, stat):
+        _, h = self.encode_and_fuse(seq, stat)
         return self.classifier(h).squeeze(-1)
+
+    def forward_all(self, seq, stat):
+        """Single-pass forward returning (logits, fused_hidden, views)."""
+        views, h = self.encode_and_fuse(seq, stat)
+        logits = self.classifier(h).squeeze(-1)
+        return logits, h, views
 
     def fused_hidden(self, seq, stat):
         """Return the fused pre-classifier representation h.
@@ -189,11 +210,7 @@ class MGNN(nn.Module):
         local curvature / smoothness of the decision function around each
         flow (paper, Sec. 5.1, Eq. (8)).
         """
-        h_seq, h_stat, h_inter = self.encode_views(seq, stat)
-        if self.fusion in ('attn', 'attn_align'):
-            h, _ = self.fuse_views(h_seq, h_stat, h_inter)
-        else:
-            h = self.fuse_views(h_seq, h_stat, h_inter)
+        _, h = self.encode_and_fuse(seq, stat)
         return h
 
     def get_views(self, seq, stat):

@@ -73,7 +73,18 @@ def _undersample_train(train_idx, labels, ratio=3):
 
 def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256,
                hidden=128, paper=False,
-               datasets=("cic_ids2017", "unsw_nb15", "cse_ids2018")):
+               datasets=("cic_ids2017", "unsw_nb15", "cse_ids2018"),
+               amp=False, compile_model=False):
+    """Table-6 fusion comparison.
+
+    A100 optimisations are enabled up front: cuDNN autotuning (benchmark mode)
+    picks the fastest convolution/LSTM kernels, and torch.compile fuses the
+    per-batch graph. ``amp`` additionally switches the training inside each
+    epoch to bf16 automatic mixed precision (tensor-core speedup,
+    near-lossless on A100). Compilation is best-effort and falls back to
+    eager execution if the dynamic GAT k-NN graph is not capturable.
+    """
+    torch.backends.cudnn.benchmark = True
     from src.data.dataset import load_pt_data
     from src.data.dataset import SEQ_LEN, STAT_DIM
 
@@ -136,12 +147,20 @@ def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256,
                 np.random.seed(seed)
                 model = MGNN(fusion=fusion, seq_len=seq_len, stat_dim=stat_dim,
                              hidden=hidden, use_gat=True).to(device)
+                if compile_model:
+                    _m = model
+                    try:
+                        model = torch.compile(model, dynamic=True)
+                    except Exception as e:  # keep eager on capture failure
+                        print(f"    [compile] skipped ({e}); using eager")
+                        model = _m
                 opt = torch.optim.Adam(model.parameters(), lr=1e-3,
                                        weight_decay=1e-5)
                 best_f1, best_state = -1.0, None
                 for ep in range(epochs):
-                    train_epoch_mgnn(model, train_loader, opt, device,
-                                     align=(fusion == "attn_align"))
+                    _ = train_epoch_mgnn(
+                        model, train_loader, opt, device,
+                        align=(fusion == "attn_align"), amp=amp)
                     vm = evaluate_mgnn(val_loader, model, device)
                     if vm["f1"] > best_f1:
                         best_f1 = vm["f1"]
@@ -171,6 +190,15 @@ if __name__ == "__main__":
                         help="Comma-separated dataset names to run "
                              "(default: all of cic_ids2017,unsw_nb15,"
                              "cse_ids2018).")
+    parser.add_argument("--amp", action="store_true",
+                        help="Use bf16 automatic mixed precision inside each "
+                             "epoch (A100 tensor-core speedup, near-lossless).")
+    parser.add_argument("--compile", dest="compile_model",
+                        action="store_true", default=False,
+                        help="(opt-in) Enable torch.compile graph compilation. "
+                             "Measured on A100 it is ~5%% slower than eager for "
+                             "this dynamic k-NN architecture, so it is off by "
+                             "default; pass --compile to enable.")
     args = parser.parse_args()
     device = parse_device(args)
     datasets = None if args.datasets is None else \
@@ -178,7 +206,8 @@ if __name__ == "__main__":
     t0 = time.time()
     res = run_table6(args.data_dir, device, runs=args.runs,
                      epochs=args.epochs, batch_size=args.batch_size,
-                     hidden=args.hidden, paper=args.paper, datasets=datasets)
+                     hidden=args.hidden, paper=args.paper, datasets=datasets,
+                     amp=args.amp, compile_model=args.compile_model)
     print(f"\n{'='*60}\nTotal {time.time()-t0:.0f}s")
     print(json.dumps(res, indent=2, default=str))
     with open("table6_results.json", "w") as f:

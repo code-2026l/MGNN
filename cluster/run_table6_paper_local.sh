@@ -10,6 +10,6 @@ rm -f logs/table6_paper.log
 nohup python -u experiments/run_table6.py \
   --data-dir data --device cuda:0 \
   --runs 5 --epochs 30 --batch-size 2048 --hidden 128 \
-  --paper --datasets cic_ids2017,unsw_nb15 \
+  --paper --datasets cic_ids2017,unsw_nb15 --amp \
   > logs/table6_paper.log 2>&1 &
 echo "table6 paper launcher started, pid $!"
