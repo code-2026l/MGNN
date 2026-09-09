@@ -136,7 +136,8 @@ def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256,
                 np.random.seed(seed)
                 model = MGNN(fusion=fusion, seq_len=seq_len, stat_dim=stat_dim,
                              hidden=hidden, use_gat=True).to(device)
-                opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+                opt = torch.optim.Adam(model.parameters(), lr=1e-3,
+                                       weight_decay=1e-5)
                 best_f1, best_state = -1.0, None
                 for ep in range(epochs):
                     train_epoch_mgnn(model, train_loader, opt, device,

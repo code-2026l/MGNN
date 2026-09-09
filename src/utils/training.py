@@ -8,15 +8,23 @@ import numpy as np
 from src.utils.metrics import compute_metrics
 
 
-def train_epoch_mgnn(model, loader, optimizer, device, align=False):
+def train_epoch_mgnn(model, loader, optimizer, device, align=False,
+                     lambda_align=0.1, lambda_reg=0.3):
     """Train MGNN for one epoch.
+
+    Implements the paper's total loss (Eq. (8)):
+        L = L_BCE + lambda_align * L_align + lambda_reg * L_reg
+    where L_align encourages inter-view consistency (only for the 'attn_align'
+    fusion) and L_reg penalizes decision-boundary curvature (smoothness).
 
     Args:
         model: MGNN model instance.
         loader: DataLoader yielding (seq, stat, labels).
         optimizer: PyTorch optimizer.
         device: torch device.
-        align: Whether to apply alignment loss.
+        align: Whether to apply the alignment loss L_align.
+        lambda_align: Weight of the alignment loss (paper: 0.1).
+        lambda_reg: Weight of the decision-boundary regularization (paper: 0.3).
 
     Returns:
         Average loss for the epoch.
@@ -29,6 +37,18 @@ def train_epoch_mgnn(model, loader, optimizer, device, align=False):
         logits = model(seq, stat)
         loss = F.binary_cross_entropy_with_logits(logits, lbl)
 
+        if lambda_reg > 0:
+            # L_reg: penalize the local curvature of the decision function.
+            # Measured as the squared gradient norm of the (squared) logit w.r.t.
+            # the fused pre-classifier representation h. This flattens the
+            # decision boundary and widens the margin (paper: margin 0.42 vs 0.31).
+            h = model.fused_hidden(seq, stat)
+            hg = h.detach().requires_grad_(True)
+            cur_logit = model.classifier(hg)
+            g = torch.autograd.grad(
+                cur_logit.pow(2).mean(), hg, retain_graph=True)[0]
+            loss = loss + lambda_reg * g.pow(2).sum(-1).mean()
+
         if align:
             views = model.get_views(seq, stat).to(device)
             vn = F.normalize(views, dim=-1)
@@ -36,7 +56,7 @@ def train_epoch_mgnn(model, loader, optimizer, device, align=False):
             for i in range(3):
                 for j in range(i + 1, 3):
                     align_loss += (vn[:, i] - vn[:, j]).pow(2).sum(-1).mean()
-            loss += 0.1 * align_loss / 3
+            loss = loss + lambda_align * align_loss / 3
 
         loss.backward()
         optimizer.step()

@@ -182,6 +182,20 @@ class MGNN(nn.Module):
             h = self.fuse_views(h_seq, h_stat, h_inter)
         return self.classifier(h).squeeze(-1)
 
+    def fused_hidden(self, seq, stat):
+        """Return the fused pre-classifier representation h.
+
+        Used by the decision-boundary regularization term to measure the
+        local curvature / smoothness of the decision function around each
+        flow (paper, Sec. 5.1, Eq. (8)).
+        """
+        h_seq, h_stat, h_inter = self.encode_views(seq, stat)
+        if self.fusion in ('attn', 'attn_align'):
+            h, _ = self.fuse_views(h_seq, h_stat, h_inter)
+        else:
+            h = self.fuse_views(h_seq, h_stat, h_inter)
+        return h
+
     def get_views(self, seq, stat):
         """Return stacked view representations for alignment loss computation."""
         with torch.no_grad():
