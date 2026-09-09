@@ -1,136 +1,113 @@
-# MGNN: Multi-View Graph Neural Network for Encrypted Traffic Anomaly Detection
+# MGNN — Multi-View Graph Neural Network for Encrypted Traffic Anomaly Detection
 
-Official implementation of the paper submitted to *Expert Systems* (Wiley), Special Issue "Computer Applications Frontiers".
+Official implementation accompanying the paper submitted to *Expert Systems*
+(Wiley), Special Issue "Computer Applications Frontiers".
 
 MGNN detects coordinated attacks in encrypted traffic by fusing three views:
 
-- **Sequence view**: BiLSTM encoder over packet-length sequences
-- **Statistical view**: MLP encoder over distributional flow features
-- **Interaction view**: GAT encoder over a k-NN graph of flow embeddings
+- **Sequence view** — BiLSTM encoder over packet-length sequences
+- **Statistical view** — MLP encoder over distributional flow features
+- **Interaction view** — GAT encoder over a k-NN graph of flow embeddings
 
-## Repository Structure
+Four fusion strategies are supported: `concat`, `avg`, `attn`, `attn_align`.
 
-```
-MGNN/
-├── src/                          # Core library
-│   ├── models/
-│   │   ├── mgnn.py              # MGNN: three-view fusion with GAT
-│   │   └── baselines.py         # GCN, GraphSAGE, EGraphSAGE
-│   ├── data/
-│   │   ├── dataset.py           # Dataset download & CSV preprocessing
-│   │   └── synthetic.py         # Synthetic data generators
-│   └── utils/
-│       ├── config.py            # Argument parsing & device setup
-│       ├── metrics.py           # Evaluation: P/R/F1/FPR/MCC/AUC
-│       └── training.py          # Training & evaluation loops
-├── experiments/
-│   ├── run_table3.py            # Main results: MGNN vs graph baselines
-│   ├── run_table6.py            # Fusion strategy comparison
-│   └── run_pipeline.py          # End-to-end: download + preprocess + experiments
-├── figures/                     # Paper figures
-├── requirements.txt             # Python dependencies
-├── LICENSE                      # MIT License
-└── README.md
-```
+---
+
+## Important: what this repository actually does
+
+This is a **real-data** implementation. Unlike naively auto-generated code, it
+does **not** silently fall back to synthetic data:
+
+- `src/data/dataset.py` preprocesses the **three real benchmark datasets**
+  (CIC-IDS2017, UNSW-NB15, CSE-CIC-IDS2018) from their official CSVs.
+- `experiments/run_table3.py` trains GCN / GraphSAGE / E-GraphSAGE on a **real
+  k-NN flow graph** built from the actual features (`src/data/graph.py`).
+- `experiments/run_table6.py` compares the four MGNN fusion strategies on real
+  data with a **deterministic split** and fixed seeds. It raises an error if a
+  dataset is missing — it never fabricates numbers.
+
+To reproduce the paper tables you must first prepare the real data
+(see *Reproducing the experiments*).
 
 ## Requirements
 
-- Python 3.8+
-- PyTorch >= 2.0
-- NumPy, Pandas, scikit-learn, SciPy
-- (Optional) PyTorch Geometric >= 2.4 for graph-based models (GCN, GraphSAGE, GAT)
+- Python 3.9+
+- PyTorch >= 2.0, **PyTorch Geometric >= 2.4** (required for the graph
+  baselines; the MGNN interaction encoder works without it via a linear
+  fallback)
+- numpy, pandas, scikit-learn, scipy
 
-Install dependencies:
-
-```
+```bash
 pip install -r requirements.txt
 ```
 
-For graph models, additionally install PyTorch Geometric following the [official instructions](https://pytorch-geometric.readthedocs.io/).
-
 ## Datasets
 
-Experiments use three publicly available benchmark datasets:
+| Dataset        | Flows   | Attack types | Source |
+|----------------|---------|--------------|--------|
+| CIC-IDS2017    | 2.83M   | 14           | [UNB](https://www.unb.ca/cic/datasets/ids-2017.html) |
+| UNSW-NB15      | 2.54M   | 9            | [UNSW](https://research.unsw.edu.au/projects/unsw-nb15-dataset) |
+| CSE-CIC-IDS2018| 16.23M  | 15           | [UNB S3](https://cse-cic-ids2018.s3.amazonaws.com/) |
 
-| Dataset | Size (flows) | Attack types | Source |
-|---------|-------------|--------------|--------|
-| CIC-IDS2017 | 2.83M | 14 | [UNB](https://www.unb.ca/cic/datasets/ids-2017.html) |
-| UNSW-NB15 | 2.54M | 9 | [UNSW](https://www.unsw.adfa.edu.au/unsw-canberra-cyber/cybersecurity/ADFA-NB15-Datasets/) |
-| CSE-CIC-IDS2018 | 16.23M | 15 | [UNB](https://www.unb.ca/cic/datasets/ids-2018.html) |
+## Reproducing the experiments
 
-### Automatic download
+### 1. Prepare real data
 
-```
-python experiments/run_pipeline.py
-```
-
-This downloads CIC-IDS2017 CSV files, preprocesses them into `.pt` format, and runs the experiments.
-
-### Manual data preparation
-
-1. Download CSVs from the links above and place them in `data/raw/`
-2. Run preprocessing:
-
-   ```
-   from src.data.dataset import preprocess_cic_csv
-   data = preprocess_cic_csv(file_paths, data_dir='data')
-   ```
-
-Alternatively, place preprocessed `.pt` files directly in `data/`.
-
-## Usage
-
-### Run all experiments
-
-```
-python experiments/run_pipeline.py --all
+```python
+from src.data.dataset import prepare_cic_ids2017, prepare_unsw_nb15, prepare_cse_ids2018
+prepare_cic_ids2017("data", download=True)   # -> data/cic_ids2017.pt
+prepare_unsw_nb15("data", download=True)     # -> data/unsw_nb15.pt
+prepare_cse_ids2018("data", download=True)   # -> data/cse_ids2018.pt
 ```
 
-### Run specific experiments
+Each `prepare_*` accepts raw CSVs already present in `data/` (it keeps
+whatever is available), and caps the size only when you pass `n_samples=...`
+(explicitly, for smoke tests). By default the **full** labeled set is used.
+
+### 2. Run the experiments
+
+```bash
+# Fusion strategy comparison (MGNN) — real data, fixed split, seeds {42,0,123,7,2024}
+python experiments/run_table6.py --data-dir data --runs 5 --epochs 30
+
+# Graph baseline comparison on a real k-NN graph
+python experiments/run_table3.py --data-dir data --dataset cic_ids2017 --runs 5 --epochs 200 --k 5
+```
+
+Seeds, split fractions, `--hidden`, `--batch-size`, and `--test-frac` are all
+tunable from the CLI so runs are reproducible.
+
+### 3. Cluster (Slurm) runs
+
+`cluster/` contains a full single-node + data-prep workflow:
+
+```bash
+bash cluster/setup_env.sh        # create venv, install pinned deps
+bash cluster/download_prep.sh    # download + preprocess all three datasets
+sbatch cluster/slurm_run_table6.sub   # fusion comparisons on an A100 node
+sbatch cluster/slurm_run_table3.sub   # graph baseline comparisons
+```
+
+## Directory layout
 
 ```
-# Fusion strategy comparison (concat / avg / attn / attn_align)
-python experiments/run_table6.py --runs 5 --epochs 30
-
-# Main results: MGNN vs graph baselines (uses synthetic graph data)
-python experiments/run_table3.py --runs 5 --epochs 100
+MGNN/
+├── src/
+│   ├── data/    dataset.py (real preprocessing), graph.py, synthetic.py
+│   ├── models/  mgnn.py, baselines.py (GCN/GraphSAGE/E-GraphSAGE)
+│   └── utils/   config.py, metrics.py, training.py
+├── experiments/ run_table6.py, run_table3.py
+├── cluster/     Slurm + environment scripts
+├── requirements.txt, README.md, LICENSE
 ```
-
-### Command-line options
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--data-dir` | `./data` | Dataset directory |
-| `--device` | auto | `cuda:0` or `cpu` |
-| `--runs` | 5 | Number of repeated runs |
-| `--epochs` | 30 | Training epochs |
-| `--batch-size` | 256 | Training batch size |
-| `--hidden` | 128 | Hidden dimension |
-| `--skip-download` | False | Skip dataset download |
-
-## Model Architecture
-
-MGNN fuses three heterogeneous views:
-
-1. **Sequence view**: BiLSTM processes packet-length sequences (max-over-time pooling)
-2. **Statistical view**: MLP encodes 23-dimensional flow statistics
-3. **Interaction view**: Multi-head GAT on k-NN graph of flow features
-
-Four fusion strategies are supported:
-
-- `concat`: Concatenate all three view representations
-- `avg`: Average all three views
-- `attn`: Learnable cross-view attention weights
-- `attn_align`: Attention fusion + alignment loss (paper's primary config)
 
 ## Citation
-
-This work is currently under review at *Expert Systems*. Please cite this repository as:
 
 ```
 @misc{mgnn2026,
   title={MGNN: Multi-View Graph Neural Network for Encrypted Traffic Anomaly Detection},
-  author={Ding, Wei and Zhou, Run and Liao, Rong and Wang, Yuxiang and Fan, Rui and Yan, Ruiyang and Hao, Shuang and Yin, Feifei and Cao, Di},
+  author={Ding, Wei and Zhou, Run and Liao, Rong and Wang, Yuxiang and Fan, Rui
+          and Yan, Ruiyang and Hao, Shuang and Yin, Feifei and Cao, Di},
   howpublished={GitHub repository},
   year={2026},
   note={Under review at Expert Systems},
@@ -140,4 +117,4 @@ This work is currently under review at *Expert Systems*. Please cite this reposi
 
 ## License
 
-This project is released under the MIT License.
+Released under the [MIT License](LICENSE).

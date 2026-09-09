@@ -30,7 +30,7 @@ def train_epoch_mgnn(model, loader, optimizer, device, align=False):
         loss = F.binary_cross_entropy_with_logits(logits, lbl)
 
         if align:
-            views = model.get_views(seq, stat)
+            views = model.get_views(seq, stat).to(device)
             vn = F.normalize(views, dim=-1)
             align_loss = 0.0
             for i in range(3):
@@ -65,26 +65,31 @@ def evaluate_mgnn(loader, model, device):
         np.array(all_labels), np.array(all_preds), np.array(all_scores))
 
 
-def train_graph_model(model_cls, data, device, runs=5, epochs=100, lr=1e-3):
+def train_graph_model(model_cls, data, device, runs=5, epochs=100, lr=1e-3,
+                      hidden=128):
     """Train a graph model (GCN/SAGE/etc.) over multiple runs.
 
     Args:
         model_cls: Model class with constructor (in_dim, hidden, out_dim).
-        data: torch_geometric Data object with train/val/test masks.
+        data: torch_geometric Data object with train/val/test masks
+              (or the equivalent dict produced by src.data.graph).
         device: torch device.
         runs: Number of repeated runs with different seeds.
         epochs: Training epochs per run.
         lr: Learning rate.
+        hidden: Hidden dimension for the model.
 
     Returns:
         List of metric dicts, one per run.
     """
     from src.utils.config import SEEDS
     results = []
+    y = data["y"] if isinstance(data, dict) else data.y
+    x = data["x"] if isinstance(data, dict) else data.x
     for seed in SEEDS[:runs]:
         torch.manual_seed(seed)
         np.random.seed(seed)
-        model = model_cls(data.x.size(-1)).to(device)
+        model = model_cls(x.size(-1), hidden=hidden).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
         data_dev = data.to(device)
 

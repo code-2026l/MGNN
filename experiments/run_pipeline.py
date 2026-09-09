@@ -1,92 +1,69 @@
 #!/usr/bin/env python3
 """
-MGNN Full Experiment Pipeline.
+End-to-end real-data pipeline.
 
-End-to-end pipeline:
-  1. Download datasets (CIC-IDS2017, UNSW-NB15, CSE-CIC-IDS2018)
-  2. Preprocess CSV -> .pt files
-  3. Run Table 3 (graph model comparison) and Table 6 (fusion strategy)
+  1) Download (best-effort) + preprocess the three benchmark datasets
+  2) Run Table 6 (fusion comparisons) and Table 3 (graph baselines)
 
 Usage:
-    python experiments/run_pipeline.py [--data-dir PATH] [--skip-download]
-    python experiments/run_pipeline.py --table3 --table6
+    python experiments/run_pipeline.py [--data-dir data]
+    python experiments/run_pipeline.py --smoke     # tiny cap, fast check
+Requires --prepare first (download/preprocess) unless data/*.pt already exist.
 """
 
 import argparse
 import json
 import os
 import time
-import numpy as np
-import torch
 
 from src.utils.config import add_common_args, parse_device
 
 
 def main():
-    parser = argparse.ArgumentParser(description='MGNN Full Experiment Pipeline')
+    parser = argparse.ArgumentParser("MGNN real-data pipeline")
     add_common_args(parser)
-    parser.add_argument('--skip-download', action='store_true',
-                        help='Skip dataset download (use existing files).')
-    parser.add_argument('--table3', action='store_true',
-                        help='Run Table 3 (graph model comparison).')
-    parser.add_argument('--table6', action='store_true',
-                        help='Run Table 6 (fusion strategy comparison).')
-    parser.add_argument('--all', action='store_true',
-                        help='Run all experiments.')
+    parser.add_argument("--prepare", action="store_true",
+                        help="download + preprocess all datasets first")
+    parser.add_argument("--smoke", action="store_true",
+                        help="use a small n_samples for a fast smoke test")
+    parser.add_argument("--table3", action="store_true", default=True,
+                        help="run graph baseline comparison (default on)")
+    parser.add_argument("--table6", action="store_true", default=True,
+                        help="run fusion comparison (default on)")
     args = parser.parse_args()
     device = parse_device(args)
-
-    print('=' * 60)
-    print('MGNN Experiment Pipeline')
-    print(f'Device: {device}')
-    print(f'Data dir: {args.data_dir}')
-    print(f'Seeds: {args.seeds}')
-    print('=' * 60)
-
     os.makedirs(args.data_dir, exist_ok=True)
-    all_results = {}
+    cap = 50000 if args.smoke else None
+
+    if args.prepare or not os.path.exists(
+            os.path.join(args.data_dir, "cic_ids2017.pt")):
+        from src.data.dataset import (prepare_cic_ids2017, prepare_unsw_nb15,
+                                      prepare_cse_ids2018)
+        prepare_cic_ids2017(args.data_dir, n_samples=cap, download=True)
+        prepare_unsw_nb15(args.data_dir, n_samples=cap, download=True)
+        prepare_cse_ids2018(args.data_dir, n_samples=cap, download=True)
+
+    results = {}
     t_start = time.time()
 
-    # Step 1: Download datasets
-    if not args.skip_download:
-        from src.data.dataset import download_cic_ids2017, preprocess_cic_csv
-        cic_files = download_cic_ids2017(args.data_dir)
-        if cic_files:
-            data = preprocess_cic_csv(cic_files, args.data_dir)
-            if data is None:
-                print('CIC-IDS2017 preprocessing failed, using synthetic fallback.')
-
-    # Step 2: Run Table 6 (fusion strategies)
-    if args.table6 or args.all:
+    if args.table6:
         from experiments.run_table6 import run_table6
-        print('\n' + '=' * 60)
-        print('TABLE 6: Fusion Strategy Comparison')
-        print('=' * 60)
-        all_results['table6'] = run_table6(
-            args.data_dir, device, runs=args.runs,
-            epochs=args.epochs, batch_size=args.batch_size,
-            hidden=args.hidden)
-
-    # Step 3: Run Table 3 (graph model comparison)
-    if args.table3 or args.all:
+        results["table6"] = run_table6(
+            args.data_dir, device, runs=args.runs, epochs=args.epochs,
+            batch_size=args.batch_size, hidden=args.hidden)
+    if args.table3:
         from experiments.run_table3 import run_table3
-        print('\n' + '=' * 60)
-        print('TABLE 3: Graph Model Comparison')
-        print('=' * 60)
-        all_results['table3'] = run_table3(
-            device, runs=args.runs, epochs=args.epochs)
+        results["table3"] = {}
+        for ds in ["cic_ids2017", "unsw_nb15", "cse_ids2018"]:
+            results["table3"][ds] = run_table3(
+                args.data_dir, ds, device, runs=args.runs,
+                epochs=args.epochs, hidden=args.hidden, k=5)
 
-    elapsed = time.time() - t_start
-    print(f'\n{"=" * 60}')
-    print(f'Pipeline complete. Total time: {elapsed:.0f}s')
-
-    if all_results:
-        results_path = os.path.join(args.data_dir, 'experiment_results.json')
-        with open(results_path, 'w') as f:
-            json.dump(all_results, f, indent=2)
-        print(f'Results saved to {results_path}')
-        print(json.dumps(all_results, indent=2))
+    print(f"\nPipeline done in {time.time()-t_start:.0f}s")
+    print(json.dumps(results, indent=2, default=str))
+    with open(os.path.join(args.data_dir, "pipeline_results.json"), "w") as f:
+        json.dump(results, f, indent=2, default=str)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

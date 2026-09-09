@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --job-name=mgnn_table6
+#SBATCH --output=logs_table6_%j.log
+#SBATCH --error=logs_table6_%j.err
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
+#SBATCH --mem=64G
+#SBATCH --time=08:00:00
+# Adjust partition/account/qos to your cluster:
+#SBATCH --partition=gpu
+#SBATCH --mail-type=END,FAIL
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+source .venv/bin/activate
+export PYTHONPATH="$PWD"
+mkdir -p logs_table6
+
+python experiments/run_table6.py \
+    --data-dir data \
+    --runs 5 \
+    --epochs 30 \
+    --batch-size 256 \
+    --hidden 128 \
+    --device cuda:0

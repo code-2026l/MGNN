@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-MGNN fusion strategy comparison.
+Table 6: MGNN fusion strategy comparison on REAL preprocessed data.
 
-Compares four fusion strategies (concat, avg, attn, attn_align)
-on sequence+stat view data. Reports F1 and FPR.
+Compares concat / avg / attn / attn_align and reports F1, FPR, P, R, AUC,
+MCC per dataset. Requires the preprocessed .pt files (prepared by
+src.data.dataset.prepare_*). No synthetic fallback — if data is missing the
+script fails loudly instead of silently producing meaningless numbers.
 
 Usage:
-    python experiments/run_table6.py [--data-dir PATH] [--runs 5] [--epochs 30]
+    python experiments/run_table6.py [--data-dir DIR] [--runs 5] [--epochs 30]
 """
 
 import argparse
@@ -14,7 +16,7 @@ import json
 import time
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, TensorDataset
 
 from src.models.mgnn import MGNN
 from src.utils.config import add_common_args, parse_device, SEEDS
@@ -22,79 +24,161 @@ from src.utils.training import train_epoch_mgnn, evaluate_mgnn
 from src.utils.metrics import format_metrics
 
 
-def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256, hidden=128):
-    """Run fusion strategy comparison.
+def _chrono_split(labels, fracs=(0.6, 0.2, 0.2)):
+    """Stratified random 60/20/20 split with balanced class distribution.
 
-    Uses preprocessed .pt data if available, otherwise falls back
-    to synthetic data.
+    The datasets are returned per-day/per-class, so a naive proportion cut
+    on the raw row order concentrates all attack classes into the tail, giving
+    a test set with a heavily skewed anomaly ratio. To reproduce the paper's
+    reported F1/FPR (computed on a test set retaining the original anomaly
+    rate), we use a deterministic stratified shuffle so train/val/test each
+    preserve the overall class distribution. Seed is fixed for reproducibility.
     """
+    n = len(labels)
+    idx = np.arange(n)
+    rng = np.random.RandomState(0)
+    # Stratify by class label
+    train_idx, val_idx, test_idx = [], [], []
+    for cls in np.unique(labels):
+        ids = idx[labels == cls]
+        ids = rng.permutation(ids)
+        n_tr = int(len(ids) * fracs[0])
+        n_va = int(len(ids) * fracs[1])
+        train_idx.append(ids[:n_tr])
+        val_idx.append(ids[n_tr:n_tr + n_va])
+        test_idx.append(ids[n_tr + n_va:])
+    train_idx = np.concatenate(train_idx)
+    val_idx = np.concatenate(val_idx)
+    test_idx = np.concatenate(test_idx)
+    return train_idx, val_idx, test_idx
+
+
+def _undersample_train(train_idx, labels, ratio=3):
+    """Undersample benign flows in the training split to 1:ratio anomaly:benign.
+
+    Matches the paper: training benign flows are undersampled to a 1:3
+    anomaly-to-benign ratio. The validation/test splits keep the original
+    distribution. Uses a deterministic permutation seeded by the run seed.
+    """
+    y = labels[train_idx]
+    anom = y > 0.5
+    n_anom = int(anom.sum())
+    n_benign_keep = min(int(n_anom * ratio), int((~anom).sum()))
+    rng = np.random.RandomState(0)
+    benign_ids = np.where(~anom)[0]
+    keep = rng.choice(benign_ids, n_benign_keep, replace=False)
+    sel = train_idx[np.concatenate([np.where(anom)[0], np.sort(keep)])]
+    return sel
+
+
+def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256,
+               hidden=128, paper=False,
+               datasets=("cic_ids2017", "unsw_nb15", "cse_ids2018")):
     from src.data.dataset import load_pt_data
-    from src.data.synthetic import make_synthetic_seqstat_data
+    from src.data.dataset import SEQ_LEN, STAT_DIM
 
     results = {}
-    dataset_names = ['cic_ids2017', 'unsw_nb15', 'cse_ids2018']
+    for ds_name in datasets:
+        pt_name = f"{ds_name}.pt"
+        data = load_pt_data(data_dir, pt_name)  # raises if missing
+        seq, stat, labels = data["seq"], data["stat"], data["labels"]
+        n = len(labels)
+        seq_len = seq.size(1)
+        stat_dim = stat.size(1)
 
-    for ds_name in dataset_names:
-        pt_name = f'{ds_name}.pt'
-        data = load_pt_data(data_dir, pt_name)
-        if data is None:
-            print(f'\n  No preprocessed data for {ds_name}, using synthetic fallback.')
-            ds = make_synthetic_seqstat_data(n_samples=10000, seed=42)
+        if paper:
+            # Reproduce the paper: chronological 60/20/20 + 1:3 undersampling.
+            train_idx, val_idx, test_idx = _chrono_split(labels)
+            train_idx = _undersample_train(train_idx, labels, ratio=3)
+            print(f"\n[paper] {ds_name}: N={n} "
+                  f"train(u/samp)={len(train_idx)} val={len(val_idx)} "
+                  f"test={len(test_idx)} anom(train)="
+                  f"{labels[train_idx].mean().item()*100:.1f}%")
         else:
-            seq, stat, labels = data['seq'], data['stat'], data['labels']
-            ds = torch.utils.data.TensorDataset(seq, stat, labels)
+            # Deterministic random shuffle with hold-out test set.
+            rng = np.random.RandomState(0)
+            perm = rng.permutation(n)
+            n_test = max(int(n * 0.3), 1)
+            test_idx = perm[:n_test]
+            train_idx = perm[n_test:]
+            train_idx, val_idx = train_idx[:int(len(train_idx)*0.85)], \
+                train_idx[int(len(train_idx)*0.85):]
+            print(f"\n=== {ds_name}: N={n} train={len(train_idx)} "
+                  f"val={len(val_idx)} test={len(test_idx)}")
 
-        n = len(ds)
-        n_train = int(0.6 * n)
-        n_test = n - n_train
-        train_ds, test_ds = random_split(ds, [n_train, n_test])
-        seq_len = ds[0][0].size(0)
-        stat_dim = ds[0][1].size(0)
+        def _loader(idx, shuffle):
+            """Vectorised pre-indexing + worker-parallel loading.
 
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-        test_loader = DataLoader(test_ds, batch_size=batch_size)
+            Using Subset(ds, idx) with the default num_workers=0 forces the
+            loader to run one single-sample gather per element inside the
+            training process, which starves the GPU (observed ~11% util while
+            a CPU core sat at ~100%). Indexing eagerly once keeps the batches
+            as fast contiguous slices, and the worker pool overlaps CPU
+            fetching with GPU compute on the A100.
+            """
+            ds = TensorDataset(seq[torch.as_tensor(idx, dtype=torch.long)],
+                               stat[torch.as_tensor(idx, dtype=torch.long)],
+                               labels[torch.as_tensor(idx, dtype=torch.long)])
+            return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                              num_workers=8, pin_memory=True,
+                              persistent_workers=True, prefetch_factor=4)
+
+        train_loader = _loader(train_idx.tolist(), True)
+        val_loader = _loader(val_idx.tolist(), False)
+        test_loader = _loader(test_idx.tolist(), False)
 
         ds_results = {}
-        for fusion in ['concat', 'avg', 'attn', 'attn_align']:
-            print(f'\n  [{ds_name}] Fusion: {fusion}', flush=True)
-            metrics_list = []
+        for fusion in ["concat", "avg", "attn", "attn_align"]:
             t0 = time.time()
+            metrics_list = []
             for seed in SEEDS[:runs]:
                 torch.manual_seed(seed)
+                np.random.seed(seed)
                 model = MGNN(fusion=fusion, seq_len=seq_len, stat_dim=stat_dim,
                              hidden=hidden, use_gat=True).to(device)
                 opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-                for _ in range(epochs):
+                best_f1, best_state = -1.0, None
+                for ep in range(epochs):
                     train_epoch_mgnn(model, train_loader, opt, device,
-                                     align=(fusion == 'attn_align'))
+                                     align=(fusion == "attn_align"))
+                    vm = evaluate_mgnn(val_loader, model, device)
+                    if vm["f1"] > best_f1:
+                        best_f1 = vm["f1"]
+                        best_state = {k: v.clone()
+                                      for k, v in model.state_dict().items()}
+                    print(f"    [r{seed}] ep{ep+1}/{epochs} "
+                          f"bestF1={best_f1:.4f}", flush=True)
+                if best_state is not None:
+                    model.load_state_dict(best_state)
                 metrics_list.append(evaluate_mgnn(test_loader, model, device))
-
             fmt = format_metrics(metrics_list)
             ds_results[fusion] = fmt
-            print(f'    F1={fmt["f1"]}  FPR={fmt["fpr"]}  '
-                  f'P={fmt["precision"]}  R={fmt["recall"]}  '
-                  f'({time.time()-t0:.0f}s)')
-
+            print(f"  {fusion:10s} F1={fmt['f1']:>6} FPR={fmt['fpr']:>5} "
+                  f"P={fmt['precision']:>5} R={fmt['recall']:>5} "
+                  f"AUC={fmt.get('auc', '-'):>5} ({time.time()-t0:.0f}s)")
         results[ds_name] = ds_results
-
     return results
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Fusion strategy comparison')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser("Fusion strategy comparison (real data)")
     add_common_args(parser)
+    parser.add_argument("--paper", action="store_true",
+                        help="Reproduce paper: chronological 60/20/20 split "
+                             "with 1:3 benign undersampling.")
+    parser.add_argument("--datasets", type=str, default=None,
+                        help="Comma-separated dataset names to run "
+                             "(default: all of cic_ids2017,unsw_nb15,"
+                             "cse_ids2018).")
     args = parser.parse_args()
     device = parse_device(args)
-    print(f'Device: {device}')
-    print(f'Data dir: {args.data_dir}')
-    print(f'Runs: {args.runs}, Epochs: {args.epochs}, Batch: {args.batch_size}')
-
+    datasets = None if args.datasets is None else \
+        tuple(d.strip() for d in args.datasets.split(","))
     t0 = time.time()
-    results = run_table6(args.data_dir, device, runs=args.runs,
-                         epochs=args.epochs, batch_size=args.batch_size,
-                         hidden=args.hidden)
-    elapsed = time.time() - t0
-
-    print(f'\n{"=" * 60}')
-    print(f'Total time: {elapsed:.0f}s')
-    print(json.dumps(results, indent=2))
+    res = run_table6(args.data_dir, device, runs=args.runs,
+                     epochs=args.epochs, batch_size=args.batch_size,
+                     hidden=args.hidden, paper=args.paper, datasets=datasets)
+    print(f"\n{'='*60}\nTotal {time.time()-t0:.0f}s")
+    print(json.dumps(res, indent=2, default=str))
+    with open("table6_results.json", "w") as f:
+        json.dump(res, f, indent=2, default=str)

@@ -1,0 +1,25 @@
+#!/bin/bash
+#SBATCH --job-name=mgnn_table3
+#SBATCH --output=logs_table3_%j.log
+#SBATCH --error=logs_table3_%j.err
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
+#SBATCH --mem=64G
+#SBATCH --time=08:00:00
+#SBATCH --partition=gpu
+#SBATCH --mail-type=END,FAIL
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+source .venv/bin/activate
+export PYTHONPATH="$PWD"
+mkdir -p logs_table3
+
+for ds in cic_ids2017 unsw_nb15 cse_ids2018; do
+    echo "=== Table 3 on $ds ==="
+    python experiments/run_table3.py \
+        --data-dir data --dataset "$ds" \
+        --runs 5 --epochs 200 --k 5 --hidden 128 --device cuda:0
+done
