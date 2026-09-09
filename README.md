@@ -11,6 +11,28 @@ MGNN detects coordinated attacks in encrypted traffic by fusing three views:
 
 Four fusion strategies are supported: `concat`, `avg`, `attn`, `attn_align`.
 
+The objective is the paper's total loss (Eq. 8 in Sec. 5.1):
+
+```text
+L = L_BCE + lambda_align * L_align  + lambda_reg * L_reg
+          (lambda_align = 0.1)        (lambda_reg  = 0.3)
+```
+
+- `L_BCE` — binary cross-entropy on the anomaly logit.
+- `L_align` — inter-view alignment loss (applied for the `attn_align` fusion),
+  encouraging the three normalized view embeddings to agree.
+- `L_reg` — decision-boundary regularization penalizing the local curvature of
+  the decision function (squared gradient norm of the logit w.r.t. the fused
+  pre-classifier representation), which flattens the boundary and widens the
+  margin. This is distinct from the Adam L2 weight decay (`1e-5`) set on the
+  optimizer.
+
+Default optimizer is Adam (lr `1e-3`, weight decay `1e-5`), batch size `2048`,
+GAT with 2 layers / 4 heads and hidden dim `128`. Experiments use the paper's
+five seeds `{42, 0, 123, 7, 2024}` over `5` runs and a 60/20/20 split with the
+benign flows undersampled to a 1:3 anomaly-to-benign ratio during training
+while validation/test keep the original class distribution.
+
 ---
 
 ## Important: what this repository actually does
