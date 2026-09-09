@@ -27,14 +27,38 @@ except Exception:  # pragma: no cover
     _HAS_SKL = False
 
 
-def knn_adjacency(X, k, metric="cosine", batch=1 << 18):
+def knn_adjacency(X, k, metric="cosine", batch=2048):
     """Build a k-NN adjacency edge_index on the full feature matrix.
 
-    For very large N (millions of flows) the caller should sample/embed first;
-    this function is vectorised and memory bounded via full-matrix search.
+    Uses the GPU when a CUDA device is available (blocked cosine similarity,
+    seconds on an A100 even for millions of nodes), falling back to
+    scikit-learn / numpy otherwise.
     """
     n = X.shape[0]
-    if _HAS_SKL:
+    device = None
+    try:
+        import torch as _t
+        if _t.cuda.is_available():
+            device = _t.device("cuda")
+    except Exception:  # pragma: no cover
+        device = None
+
+    if device is not None:
+        Xn = torch.from_numpy(
+            X.astype(np.float32) / (np.linalg.norm(X, axis=1,
+                                                   keepdims=True) + 1e-8)
+        ).to(device)
+        dst_all = []
+        k_eff = min(k + 1, n)
+        # Blocked similarity: iterate over source chunks to bound memory.
+        for s in range(0, n, batch):
+            sim = Xn[s:s + batch] @ Xn.t()          # (chunk, n)
+            _, idx = sim.topk(k_eff, dim=-1)        # self first (cos=1)
+            dst_all.append(idx[:, 1:k + 1].reshape(-1).cpu())
+        dst = torch.cat(dst_all)
+        src = torch.arange(n, device="cpu").unsqueeze(1).expand(-1, k).reshape(-1)
+        return torch.stack([src, dst], dim=0)
+    elif _HAS_SKL:
         nn = NearestNeighbors(n_neighbors=min(k + 1, n), metric=metric,
                               algorithm="brute", n_jobs=-1)
         nn.fit(X)

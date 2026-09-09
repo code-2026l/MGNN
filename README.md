@@ -93,14 +93,42 @@ prepare_cse_ids2018("data", download=True)   # -> data/cse_ids2018.pt
 python experiments/run_table6.py --data-dir data --runs 5 --epochs 30 --amp
 
 # Graph baseline comparison on a real k-NN flow graph
-python experiments/run_table3.py --data-dir data --dataset cic_ids2017 --runs 5 --epochs 200 --k 5
+# (--n-max caps very large datasets, e.g. 200k for CIC-IDS2017)
+python experiments/run_table3.py --data-dir data --dataset unsw_nb15 --runs 5 --epochs 200 --k 5
+python experiments/run_table3.py --data-dir data --dataset cic_ids2017 --runs 5 --epochs 200 --k 5 --n-max 200000
 ```
 
 Settings follow the paper: a 60/20/20 stratified split, benign flows
 undersampled to 1:3 during training with validation/test keeping the original
 class distribution, and Adam (`lr=1e-3`, `weight_decay=1e-5`, `batch_size=2048`).
 
-### 3. Cluster (Slurm) runs
+### 3. Reproduction results
+
+`results/` stores the numbers produced by this code on an NVIDIA A100 (80 GB)
+with bf16 AMP:
+
+- **Table 6 (fusion strategies), CIC-IDS2017:** concat 96.4, avg 96.3,
+  attn 96.4, attn_align 94.8 (paper: 95.8 / 96.2 / 97.3 / 98.5). The first
+  three fusions track the paper; attn_align is lower because the interaction
+  view here uses a k-NN approximation of the flow graph, whereas the paper's
+  GAT operates on the full heterogeneous flow/IP graph (which is not retained
+  in the preprocessed `.pt`). The alignment loss itself is implemented exactly
+  as Eq. (7) — see `experiments/diag_align.py`, which verifies that
+  alternative align formulations do not close the gap.
+- **Table 6, UNSW-NB15:** concat 98.2, avg 97.9, attn 97.4, attn_align 97.4
+  (paper main table: 96.8).
+- **Table 3 (graph baselines):** on the k-NN flow graph, GCN 91.1 / GraphSAGE
+  93.0 / E-GraphSAGE 47.0 on a 200k CIC slice, and GCN 96.0 / GraphSAGE 96.7 /
+  E-GraphSAGE 88.3 on UNSW-NB15 (paper: GCN 89.7 / SAGE 91.3 / E-SAGE 92.1 on
+  CIC). GCN and GraphSAGE are within a few points of the paper; E-GraphSAGE
+  here is a PyG-compatibility re-implementation using index ops (no
+  `torch_sparse`), which does not match the original E-GraphSAGE behaviour.
+
+To regenerate these numbers on a GPU machine, prepare the data (step 1) and
+run the two commands above; results are written to `table6_results.json` and
+`table3_<dataset>_results.json`.
+
+### 4. Cluster (Slurm) runs
 
 `cluster/` contains a single-node workflow for the data-prep and the experiments:
 

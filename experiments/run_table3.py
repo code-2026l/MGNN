@@ -23,11 +23,17 @@ GRAPH_MODELS = {"GCN", "GraphSAGE", "E-GraphSAGE"}
 
 
 def run_table3(data_dir, dataset, device, runs=5, epochs=200, hidden=128,
-               k=5):
+               k=5, n_max=None):
     from src.data.dataset import load_pt_data
     from src.data.graph import build_graph
 
     data = load_pt_data(data_dir, f"{dataset}.pt")
+    n_total = data['features'].size(0)
+    if n_max is not None and n_total > n_max:
+        rng = np.random.RandomState(42)
+        keep = rng.permutation(n_total)[:n_max]
+        data = {k: v[keep] for k, v in data.items()
+                if hasattr(v, "__getitem__") and v.ndim >= 1}
     print(f"\nBuilding real {k}-NN graph on {dataset} "
           f"(N={data['features'].size(0)})...")
     graph = build_graph(data["features"].numpy(), data["labels"].numpy(),
@@ -71,11 +77,15 @@ if __name__ == "__main__":
                         choices=["cic_ids2017", "unsw_nb15", "cse_ids2018"])
     parser.add_argument("--k", type=int, default=5,
                         help="k-NN graph degree")
+    parser.add_argument("--n-max", type=int, default=None,
+                        help="Cap the number of nodes (deterministic sample) "
+                             "for very large datasets.")
     args = parser.parse_args()
     device = parse_device(args)
     t0 = time.time()
     res = run_table3(args.data_dir, args.dataset, device, runs=args.runs,
-                     epochs=args.epochs, hidden=args.hidden, k=args.k)
+                     epochs=args.epochs, hidden=args.hidden, k=args.k,
+                     n_max=args.n_max)
     print(f"\n{'='*60}\nTotal {time.time()-t0:.0f}s")
     print(json.dumps(res, indent=2, default=str))
     with open(f"table3_{args.dataset}_results.json", "w") as f:

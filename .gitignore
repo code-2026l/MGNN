@@ -12,10 +12,11 @@ build/
 *.csv
 
 # Results / checkpoints
-results/
 checkpoints/
 *.pth
 *.json
+!results/
+!results/*.json
 
 # LaTeX auxiliary
 *.aux
