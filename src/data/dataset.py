@@ -60,7 +60,7 @@ CIC_IDS2017_FILES = [
     "Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv",
     "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv",
 ]
-CIC_IDS2017_BASE = "https://raw.githubusercontent.com/yashpotdar-py/cicids-dataset/main/"
+CIC_IDS2017_BASE = "https://media.githubusercontent.com/media/yashpotdar-py/cicids-dataset/main/"
 
 # CSE-CIC-IDS2018: official public S3 bucket (verified reachable, no signing).
 CSE_IDS2018_BASE = (
