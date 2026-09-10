@@ -21,7 +21,7 @@ post-hoc interpretability.
 
 On three public benchmarks (21.6M flows, 38 attack categories) MGNN achieves
 **F1 = 98.5% / 96.8% / 96.1%** on CIC-IDS2017 / UNSW-NB15 / CSE-CIC-IDS2018,
-outperforming the strongest baseline (GDN) by 5.4–12.1 F1 points, with FPR 0.6%
+outperforming the strongest baseline (GDN) by 5.4–12.1 F1 points, with FPR 4.2%
 on CIC-IDS2017 and 0.8–0.9% on the other two datasets, and processes **1.2M
 flows/s** on a single NVIDIA A100 GPU.
 
@@ -114,7 +114,7 @@ python experiments/run_table8.py --data-dir data --dataset cic_ids2017 --runs 5 
 # Cross-dataset generalization (paper, Table 4)
 python experiments/run_table4.py --data-dir data --runs 5 --epochs 30
 
-# View and loss abalations on CIC-IDS2017 (paper, Table 5 / Table 7)
+# View and loss ablations on CIC-IDS2017 (paper, Table 5 / Table 7)
 python experiments/run_ablation.py --data-dir data --runs 5 --epochs 30 --view
 python experiments/run_ablation.py --data-dir data --runs 5 --epochs 30 --loss
 ```
