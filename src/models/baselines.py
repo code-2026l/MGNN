@@ -8,6 +8,7 @@ the paper's implementation section (Adam, lr=1e-3, weight_decay=1e-5,
 hidden=128).
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -172,6 +173,64 @@ class FNGNN(nn.Module):
         x = F.relu(self.conv1(x, data.edge_index)) + x
         x = F.relu(self.conv2(x, data.edge_index)) + x
         return self.out(x).squeeze(-1)
+
+
+class CNNNet(nn.Module):
+    """1D CNN over the packet sequence (paper, Table 2 baseline)."""
+
+    def __init__(self, in_dim=3, hidden=128, out_dim=1):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(in_dim, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.Conv1d(64, 128, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.AdaptiveAvgPool1d(1),
+        )
+        self.out = nn.Linear(128, out_dim)
+
+    def forward(self, seq):
+        # seq: (B, 100, 3) -> (B, 64, 50) -> (B, 128, 25) -> (B, 128)
+        x = self.conv(seq.transpose(1, 2)).squeeze(-1)
+        return self.out(x).squeeze(-1)
+
+
+class KitNET(nn.Module):
+    """KitNET (Mirsky et al., 2018): an ensemble of autoencoders.
+
+    The statistical view is split into contiguous feature blocks; each block
+    is reconstructed by its own autoencoder and the per-sample anomaly score
+    is the mean reconstruction error across blocks.
+    """
+
+    def __init__(self, in_dim=23, hidden=64, n_blocks=8, out_dim=1):
+        super().__init__()
+        self.in_dim = in_dim
+        sizes = np.linspace(0, in_dim, n_blocks + 1).astype(int)
+        self.sizes = [(int(sizes[i]), int(sizes[i + 1]))
+                      for i in range(n_blocks)]
+        self.encoders = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        for lo, hi in self.sizes:
+            d = hi - lo
+            self.encoders.append(nn.Sequential(
+                nn.Linear(d, hidden), nn.ReLU(),
+                nn.Linear(hidden, hidden // 2)))
+            self.decoders.append(nn.Sequential(
+                nn.Linear(hidden // 2, hidden), nn.ReLU(),
+                nn.Linear(hidden, d)))
+
+    def forward(self, x):
+        """Return the mean reconstruction error per sample (anomaly score)."""
+        errs = []
+        for (lo, hi), enc, dec in zip(self.sizes, self.encoders,
+                                      self.decoders):
+            z = x[:, lo:hi]
+            rec = dec(enc(z))
+            errs.append((z - rec).pow(2).mean(dim=-1))
+        return torch.stack(errs, dim=-1).mean(dim=-1)
 
 
 class DNN(nn.Module):

@@ -100,10 +100,13 @@ class MGNN(nn.Module):
     """
 
     def __init__(self, fusion='attn_align', seq_len=100, stat_dim=23,
-                 hidden=128, n_ips=0, gat_heads=4):
+                 hidden=128, n_ips=0, gat_heads=4, drop_views=None):
         super().__init__()
         self.fusion = fusion
         self.hidden = hidden
+        # drop_views: tuple of view names to disable in the fusion
+        # ('sequence', 'statistical', 'interaction'), used by the ablation.
+        self.drop_views = set() if drop_views is None else set(drop_views)
 
         self.seq_encoder = SeqEncoder(input_dim=3, hidden=hidden)
         self.stat_encoder = StatEncoder(stat_dim=stat_dim, hidden=hidden)
@@ -115,9 +118,10 @@ class MGNN(nn.Module):
         elif fusion == 'avg':
             proj_dim = hidden
         elif fusion in ('attn', 'attn_align'):
-            # Cross-view attention: linear + tanh scores, then softmax
-            self.attn_q = nn.Linear(hidden, 64)
-            self.attn_w = nn.Linear(64, 1, bias=False)
+            # Cross-view attention (paper, Sec. 4.4): a single linear layer
+            # scores each view, tanh activates the scores, softmax normalizes
+            # them into per-flow fusion weights.
+            self.attn_score = nn.Linear(hidden, 1, bias=False)
             proj_dim = hidden
         else:
             raise ValueError(f"Unknown fusion: {fusion}")
@@ -139,7 +143,7 @@ class MGNN(nn.Module):
             return views.reshape(views.size(0), -1), None
         if self.fusion == 'avg':
             return views.mean(dim=1), None
-        scores = self.attn_w(torch.tanh(self.attn_q(views))).squeeze(-1)
+        scores = torch.tanh(self.attn_score(views)).squeeze(-1)
         weights = F.softmax(scores, dim=1)
         return (weights.unsqueeze(-1) * views).sum(dim=1), weights
 
@@ -164,6 +168,12 @@ class MGNN(nn.Module):
         h_stat = self.stat_encoder(x_stat)
         h_all = self.inter_encoder(x_all, edge_index, node_type, ip_index)
         h_inter = h_all[flow_mask]
+        if "sequence" in self.drop_views:
+            h_seq = torch.zeros_like(h_seq)
+        if "statistical" in self.drop_views:
+            h_stat = torch.zeros_like(h_stat)
+        if "interaction" in self.drop_views:
+            h_inter = torch.zeros_like(h_inter)
         views = torch.stack([h_seq, h_stat, h_inter], dim=1)
         h, _ = self.fuse_views(views)
         logits = self.classifier(h).squeeze(-1)

@@ -54,9 +54,9 @@ def main():
             args.data_dir, device, runs=args.runs, epochs=args.epochs,
             batch_size=args.batch_size, hidden=args.hidden, amp=args.amp)
     if args.table3:
-        from experiments.run_table3 import run_table3
+        from experiments.run_table8 import run_table8
         # Paper, Table 8: SOTA comparison on CIC-IDS2017 (70/30 split).
-        results["table3"] = run_table3(
+        results["table3"] = run_table8(
             args.data_dir, "cic_ids2017", device, runs=args.runs,
             epochs=args.epochs, hidden=args.hidden)
 

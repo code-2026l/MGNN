@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Table 3: comparison with state-of-the-art methods (paper, Table 8 / Sec. 5.7).
+Table 8: comparison with state-of-the-art methods (paper, Table 8 / Sec. 5.7).
 
 Reproduces the paper's SOTA comparison on CIC-IDS2017 with a chronological
 70/30 split: traditional ML (Random Forest, XGBoost, LightGBM), deep
@@ -8,7 +8,7 @@ learning (LSTM, CNN-LSTM, DNN, BiLSTM) and graph methods (GAT, GCN,
 E-GraphSAGE, FN-GNN, GDN). MGNN itself is produced by run_table6.py.
 
 Usage:
-    python experiments/run_table3.py [--data-dir DIR] [--dataset cic_ids2017]
+    python experiments/run_table8.py [--data-dir DIR] [--dataset cic_ids2017]
                                      [--runs 5] [--epochs 30]
                                      [--models GCN,GDN,...]
 """
@@ -21,6 +21,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.utils.config import add_common_args, parse_device, SEEDS
+from src.utils.split import chrono_split, undersample_train
 
 ML_MODELS = ["RF", "XGBoost", "LightGBM"]
 DL_MODELS = ["LSTM", "CNN-LSTM", "DNN", "BiLSTM"]
@@ -28,31 +29,10 @@ GNN_MODELS = ["GAT", "GCN", "E-GraphSAGE", "FN-GNN", "GDN"]
 ALL_MODELS = ML_MODELS + DL_MODELS + GNN_MODELS
 
 
-def _chrono_split_70_30(timestamps, fracs=(0.56, 0.14, 0.30)):
-    """Chronological split (paper, Table 8: 70/30 with validation slice)."""
-    order = np.argsort(timestamps, kind="stable")
-    n = len(order)
-    n_tr = int(n * fracs[0])
-    n_va = int(n * fracs[1])
-    return order[:n_tr], order[n_tr:n_tr + n_va], order[n_tr + n_va:]
-
-
-def _undersample(train_idx, labels, ratio=3):
-    """1:3 anomaly:benign undersampling on the training split (paper, Sec. 5.1)."""
-    y = labels[train_idx]
-    anom = y > 0.5
-    n_anom = int(anom.sum())
-    n_keep = min(int(n_anom * ratio), int((~anom).sum()))
-    rng = np.random.RandomState(0)
-    keep = rng.choice(np.where(~anom)[0], n_keep, replace=False)
-    return train_idx[np.concatenate([np.where(anom)[0], np.sort(keep)])]
-
-
-def run_table3(data_dir, dataset, device, runs=5, epochs=30, hidden=128,
+def run_table8(data_dir, dataset, device, runs=5, epochs=30, hidden=128,
                models=None):
     from src.data.dataset import load_pt_data
-    from src.data.graph import (build_hetero_graph, flow_flow_graph,
-                                knn_adjacency)
+    from src.data.graph import (build_hetero_graph, flow_flow_graph)
     from src.models import baselines as bl
     from src.utils.training import train_graph_model
     from src.utils.metrics import compute_metrics, format_metrics
@@ -63,8 +43,8 @@ def run_table3(data_dir, dataset, device, runs=5, epochs=30, hidden=128,
     src_ip = data["src_ip"].numpy()
     dst_ip = data["dst_ip"].numpy()
 
-    train_idx, val_idx, test_idx = _chrono_split_70_30(ts)
-    train_sel = _undersample(train_idx, labels.numpy())
+    train_idx, val_idx, test_idx = chrono_split(ts, fracs=(0.56, 0.14, 0.30))
+    train_sel = undersample_train(train_idx, labels.numpy())
     print(f"\n[{dataset}] N={len(labels)} train={len(train_sel)} "
           f"val={len(val_idx)} test={len(test_idx)} "
           f"anom(test)={labels[test_idx].mean().item()*100:.1f}%")
@@ -248,9 +228,9 @@ if __name__ == "__main__":
     models = None if args.models is None else \
         [m.strip() for m in args.models.split(",")]
     t0 = time.time()
-    res = run_table3(args.data_dir, args.dataset, device, runs=args.runs,
+    res = run_table8(args.data_dir, args.dataset, device, runs=args.runs,
                      epochs=args.epochs, hidden=args.hidden, models=models)
     print(f"\n{'='*60}\nTotal {time.time()-t0:.0f}s")
     print(json.dumps(res, indent=2, default=str))
-    with open(f"table3_{args.dataset}_results.json", "w") as f:
+    with open(f"table8_{args.dataset}_results.json", "w") as f:
         json.dump(res, f, indent=2, default=str)

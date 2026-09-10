@@ -26,36 +26,7 @@ import numpy as np
 import torch
 
 from src.utils.config import add_common_args, parse_device, SEEDS
-
-
-def _chrono_split(timestamps, fracs=(0.6, 0.2, 0.2)):
-    """Chronological 60/20/20 split (paper, Sec. 5.1).
-
-    The first 60% of flows (by arrival time) form the training set, the next
-    20% the validation set and the last 20% the test set, preserving temporal
-    ordering so future flows never influence predictions on past ones.
-    """
-    order = np.argsort(timestamps, kind="stable")
-    n = len(order)
-    n_tr = int(n * fracs[0])
-    n_va = int(n * fracs[1])
-    return order[:n_tr], order[n_tr:n_tr + n_va], order[n_tr + n_va:]
-
-
-def _undersample_train(train_idx, labels, ratio=3):
-    """Undersample benign flows to a 1:ratio anomaly:benign ratio.
-
-    Applied to the training split only; the validation/test sets retain the
-    original class distribution (paper, Sec. 5.1).
-    """
-    y = labels[train_idx]
-    anom = y > 0.5
-    n_anom = int(anom.sum())
-    n_benign_keep = min(int(n_anom * ratio), int((~anom).sum()))
-    rng = np.random.RandomState(0)
-    benign_ids = np.where(~anom)[0]
-    keep = rng.choice(benign_ids, n_benign_keep, replace=False)
-    return train_idx[np.concatenate([np.where(anom)[0], np.sort(keep)])]
+from src.utils.split import chrono_split, undersample_train
 
 
 def run_table6(data_dir, device, runs=5, epochs=30, batch_size=2048,
@@ -81,8 +52,8 @@ def run_table6(data_dir, device, runs=5, epochs=30, batch_size=2048,
         n_ips_global = int(data["n_unique_ips"])
         n = len(labels)
 
-        train_idx, val_idx, test_idx = _chrono_split(ts)
-        train_sel = _undersample_train(train_idx, labels.numpy(), ratio=3)
+        train_idx, val_idx, test_idx = chrono_split(ts)
+        train_sel = undersample_train(train_idx, labels.numpy(), ratio=3)
         print(f"\n[{ds_name}] N={n} ips={n_ips_global} "
               f"train={len(train_idx)} (u/samp={len(train_sel)}) "
               f"val={len(val_idx)} test={len(test_idx)} "

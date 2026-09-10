@@ -48,10 +48,19 @@ STAT_DIM = 23
 # Download sources
 # ---------------------------------------------------------------------------
 
-# CIC-IDS2017: full-column per-day CSVs (Src IP dec / Dst IP dec / Protocol /
-# Timestamp / 78 flow features / Label) hosted on HuggingFace.
-CIC_IDS2017_FILES = ["monday", "tuesday", "wednesday", "thursday", "friday"]
-CIC_IDS2017_BASE = "https://huggingface.co/datasets/bvk/CICIDS-2017/resolve/main/"
+# CIC-IDS2017: per-day CSVs with the full column set (Src/Dst IP, Timestamp,
+# 78 flow features, Label), hosted on the cicids-dataset GitHub mirror.
+CIC_IDS2017_FILES = [
+    "Monday-WorkingHours.pcap_ISCX.csv",
+    "Tuesday-WorkingHours.pcap_ISCX.csv",
+    "Wednesday-workingHours.pcap_ISCX.csv",
+    "Thursday-WorkingHours-Morning-WebAttacks.pcap_ISCX.csv",
+    "Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv",
+    "Friday-WorkingHours-Morning.pcap_ISCX.csv",
+    "Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv",
+    "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv",
+]
+CIC_IDS2017_BASE = "https://raw.githubusercontent.com/yashpotdar-py/cicids-dataset/main/"
 
 # CSE-CIC-IDS2018: official public S3 bucket (verified reachable, no signing).
 CSE_IDS2018_BASE = (
@@ -114,8 +123,8 @@ def download_dataset_files(name, data_dir):
     if name == "cic_ids2017":
         files = []
         for fn in CIC_IDS2017_FILES:
-            dest = os.path.join(data_dir, fn + ".csv")
-            if download_file(_url_join(CIC_IDS2017_BASE, fn + ".csv"), dest, "CIC"):
+            dest = os.path.join(data_dir, fn)
+            if download_file(_url_join(CIC_IDS2017_BASE, fn), dest, "CIC"):
                 files.append(dest)
         return files
     if name == "cse_ids2018":
@@ -516,8 +525,8 @@ def prepare_cic_ids2017(data_dir, n_samples=None, download=True):
     if download:
         paths = download_dataset_files("cic_ids2017", data_dir)
     if not paths:
-        paths = [os.path.join(data_dir, f + ".csv") for f in CIC_IDS2017_FILES
-                 if os.path.exists(os.path.join(data_dir, f + ".csv"))]
+        paths = [os.path.join(data_dir, f) for f in CIC_IDS2017_FILES
+                 if os.path.exists(os.path.join(data_dir, f))]
     return preprocess_csvs(paths, "cic_ids2017", data_dir,
                            "cic_ids2017.pt", n_samples=n_samples)
 
