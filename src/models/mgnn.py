@@ -1,146 +1,121 @@
 """
 MGNN: Multi-View Graph Neural Network for Encrypted Traffic Anomaly Detection.
 
-Implements the three-view fusion architecture:
-  - Sequence view: BiLSTM encoder for packet-length sequences
-  - Statistical view: MLP encoder for distributional features
-  - Interaction view: GAT encoder on k-NN graph of flow features
+Implements the three-view fusion architecture (paper, Sec. 4.3-4.4):
 
-Supports four fusion strategies: concat, avg, attn, attn_align.
+  - Sequence view:    BiLSTM over the 3-channel packet sequence
+                      (length, direction, inter-arrival time), max-pooled
+                      over time, sequences truncated at 100 packets.
+  - Statistical view: two-layer MLP with batch normalization over the
+                      23-dimensional distributional flow features.
+  - Interaction view: 2-layer, 4-head GAT with type-specific linear
+                      projections over the heterogeneous flow/IP graph.
+
+Cross-view attention (a linear layer followed by tanh, then softmax) learns
+per-flow fusion weights, enabling post-hoc interpretability (paper, Sec. 4.4).
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-class GATInteractionEncoder(nn.Module):
-    """Graph Attention Network encoder for the interaction view.
-
-    Builds a k-NN graph from batch feature vectors and applies
-    multi-head GAT convolution to capture flow-level interactions.
-    Falls back to a linear projection when PyTorch Geometric is unavailable.
-    """
-
-    def __init__(self, in_dim, hidden=128, heads=4, use_pyg=True):
-        super().__init__()
-        self.use_pyg = use_pyg
-        self.hidden = hidden
-
-        if use_pyg:
-            try:
-                from torch_geometric.nn import GATConv
-                self.gat_conv1 = GATConv(in_dim, hidden // heads, heads=heads)
-                self.gat_conv2 = GATConv(hidden, hidden, heads=1)
-                self._gat_available = True
-            except ImportError:
-                print("  [GATInteractionEncoder] PyTorch Geometric not found, "
-                      "falling back to linear projection.")
-                self._gat_available = False
-        else:
-            self._gat_available = False
-
-        if not self._gat_available:
-            self.fallback_proj = nn.Sequential(
-                nn.Linear(in_dim, hidden),
-                nn.BatchNorm1d(hidden),
-                nn.ReLU(),
-            )
-
-    def _build_knn_graph(self, x, k=5):
-        """Build k-NN graph from feature vectors (batched)."""
-        n = x.size(0)
-        if n <= 1:
-            edge_index = torch.zeros((2, 0), dtype=torch.long, device=x.device)
-            return edge_index
-
-        # Compute pairwise cosine similarity
-        x_norm = F.normalize(x, dim=-1)
-        sim = x_norm @ x_norm.t()
-
-        # Get top-k neighbours (excluding self)
-        k_eff = min(k + 1, n)
-        _, idx = sim.topk(k_eff, dim=-1)
-
-        src = torch.arange(n, device=x.device).unsqueeze(1).expand(-1, k_eff - 1)
-        dst = idx[:, 1:]  # exclude self
-        edge_index = torch.stack([src.reshape(-1), dst.reshape(-1)], dim=0)
-        return edge_index
-
-    def forward(self, x):
-        if self._gat_available and x.size(0) > 1:
-            edge_index = self._build_knn_graph(x)
-            if edge_index.size(1) == 0:
-                return self.fallback_proj(x)
-            h = self.gat_conv1(x, edge_index)
-            h = F.relu(h)
-            h = self.gat_conv2(h, edge_index)
-            return F.relu(h)
-        else:
-            return self.fallback_proj(x)
+from torch_geometric.nn import GATConv
 
 
 class SeqEncoder(nn.Module):
-    """BiLSTM encoder for packet-length sequences."""
+    """BiLSTM encoder for the packet-sequence view (paper, Sec. 4.3)."""
 
-    def __init__(self, input_dim=1, hidden=128):
+    def __init__(self, input_dim=3, hidden=128):
         super().__init__()
-        self.lstm = nn.LSTM(input_dim, hidden // 2, batch_first=True, bidirectional=True)
+        self.lstm = nn.LSTM(input_dim, hidden // 2, num_layers=2,
+                            batch_first=True, bidirectional=True)
 
     def forward(self, seq):
-        # seq: (batch, seq_len, input_dim)
+        # seq: (batch, 100, 3)  [length, direction, inter-arrival time]
         h, _ = self.lstm(seq)
-        h_seq, _ = torch.max(h, dim=1)  # max-over-time pooling
-        return h_seq
+        return h.max(dim=1).values
 
 
 class StatEncoder(nn.Module):
-    """MLP encoder for statistical features."""
+    """Two-layer MLP with batch normalization (paper, Sec. 4.3)."""
 
     def __init__(self, stat_dim=23, hidden=128):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(stat_dim, 64),
-            nn.BatchNorm1d(64),
+            nn.Linear(stat_dim, hidden),
+            nn.BatchNorm1d(hidden),
             nn.ReLU(),
-            nn.Linear(64, hidden),
+            nn.Linear(hidden, hidden),
         )
 
     def forward(self, stat):
         return self.mlp(stat)
 
 
+class HeteroGATEncoder(nn.Module):
+    """2-layer, 4-head GAT with type-specific linear projections.
+
+    Flow nodes are projected from their statistical features; IP nodes are
+    looked up from a learnable embedding table (one entry per unique IP
+    address). Both node types then propagate through shared GAT layers over
+    the heterogeneous graph (paper, Sec. 4.3).
+    """
+
+    def __init__(self, in_dim, hidden=128, heads=4, n_ips=0):
+        super().__init__()
+        self.hidden = hidden
+        self.flow_proj = nn.Sequential(
+            nn.Linear(in_dim, hidden),
+            nn.BatchNorm1d(hidden),
+            nn.ReLU(),
+        )
+        self.ip_emb = nn.Embedding(max(n_ips, 1), hidden) if n_ips > 0 else None
+        self.gat1 = GATConv(hidden, hidden // heads, heads=heads)
+        self.gat2 = GATConv(hidden, hidden, heads=1)
+
+    def forward(self, x, edge_index, node_type, ip_index):
+        flow_mask = node_type == 0
+        h = torch.zeros(x.size(0), self.hidden, device=x.device)
+        if flow_mask.any():
+            h[flow_mask] = self.flow_proj(x[flow_mask])
+        ip_mask = ~flow_mask
+        if ip_mask.any() and self.ip_emb is not None:
+            h[ip_mask] = self.ip_emb(ip_index[ip_mask].clamp(min=0))
+        h = F.relu(self.gat1(h, edge_index))
+        h = F.relu(self.gat2(h, edge_index))
+        return h
+
+
 class MGNN(nn.Module):
     """Multi-View Graph Neural Network with configurable fusion.
 
     Args:
-        fusion: Fusion strategy ('concat', 'avg', 'attn', 'attn_align').
-        seq_len: Length of input packet-length sequences.
-        stat_dim: Dimensionality of statistical features.
-        hidden: Hidden dimension for all encoders.
-        use_gat: Whether to use GAT for the interaction view.
-        gat_heads: Number of GAT attention heads.
+        fusion: Fusion strategy, one of 'concat', 'avg', 'attn', 'attn_align'
+                (paper, Table 6).
+        seq_len: Length of the packet sequences (100 in the paper).
+        stat_dim: Dimensionality of the statistical features (23).
+        hidden: Hidden dimension of every encoder (128).
+        n_ips: Number of unique IP addresses in the dataset (embedding size).
+        gat_heads: Number of GAT attention heads (4).
     """
 
     def __init__(self, fusion='attn_align', seq_len=100, stat_dim=23,
-                 hidden=128, use_gat=True, gat_heads=4):
+                 hidden=128, n_ips=0, gat_heads=4):
         super().__init__()
         self.fusion = fusion
         self.hidden = hidden
 
-        # Three-view encoders
-        self.seq_encoder = SeqEncoder(input_dim=1, hidden=hidden)
+        self.seq_encoder = SeqEncoder(input_dim=3, hidden=hidden)
         self.stat_encoder = StatEncoder(stat_dim=stat_dim, hidden=hidden)
-        self.inter_encoder = GATInteractionEncoder(
-            in_dim=stat_dim, hidden=hidden, heads=gat_heads, use_pyg=use_gat,
-        )
+        self.inter_encoder = HeteroGATEncoder(
+            in_dim=stat_dim, hidden=hidden, heads=gat_heads, n_ips=n_ips)
 
-        # Fusion-specific components
         if fusion == 'concat':
             proj_dim = hidden * 3
         elif fusion == 'avg':
             proj_dim = hidden
         elif fusion in ('attn', 'attn_align'):
+            # Cross-view attention: linear + tanh scores, then softmax
             self.attn_q = nn.Linear(hidden, 64)
             self.attn_w = nn.Linear(64, 1, bias=False)
             proj_dim = hidden
@@ -155,75 +130,61 @@ class MGNN(nn.Module):
         )
         self.use_align = (fusion == 'attn_align')
 
-    def encode_views(self, seq, stat):
-        """Encode all three views and return individual view representations."""
-        h_seq = self.seq_encoder(seq)
-        h_stat = self.stat_encoder(stat)
-        h_inter = self.inter_encoder(stat)
-        return h_seq, h_stat, h_inter
+    def fuse_views(self, views):
+        """Fuse the (B, 3, hidden) view stack with the configured strategy.
 
-    def fuse_views(self, h_seq, h_stat, h_inter):
-        """Fuse three view representations using the configured strategy."""
-        if self.fusion == 'concat':
-            return torch.cat([h_seq, h_stat, h_inter], dim=-1)
-        elif self.fusion == 'avg':
-            return (h_seq + h_stat + h_inter) / 3.0
-        else:  # attn / attn_align
-            views = torch.stack([h_seq, h_stat, h_inter], dim=1)  # (batch, 3, hidden)
-            scores = self.attn_w(torch.tanh(self.attn_q(views))).squeeze(-1)
-            weights = F.softmax(scores, dim=1)
-            return torch.sum(weights.unsqueeze(-1) * views, dim=1), weights
-
-    def encode_and_fuse(self, seq, stat):
-        """Encode all three views once and return (views, fused_hidden).
-
-        views: (B, 3, hidden) stacked representations.
-        fused_hidden: (B, dim) pre-classifier fusion result.
-        Arranged so a single encoder pass serves the classifier, the
-        decision-boundary regularizer, and the alignment loss together,
-        avoiding the redundant forward passes that starve the GPU.
+        For attention fusion also returns the per-flow view weights.
         """
-        h_seq, h_stat, h_inter = self.encode_views(seq, stat)
-        views = torch.stack([h_seq, h_stat, h_inter], dim=1)
         if self.fusion == 'concat':
-            h = torch.cat([h_seq, h_stat, h_inter], dim=-1)
-        elif self.fusion == 'avg':
-            h = (h_seq + h_stat + h_inter) / 3.0
-        else:  # attn / attn_align
-            h, _ = self.fuse_views(h_seq, h_stat, h_inter)
-        return views, h
+            return views.reshape(views.size(0), -1), None
+        if self.fusion == 'avg':
+            return views.mean(dim=1), None
+        scores = self.attn_w(torch.tanh(self.attn_q(views))).squeeze(-1)
+        weights = F.softmax(scores, dim=1)
+        return (weights.unsqueeze(-1) * views).sum(dim=1), weights
 
-    def forward(self, seq, stat):
-        _, h = self.encode_and_fuse(seq, stat)
-        return self.classifier(h).squeeze(-1)
+    def forward_all(self, x_seq, x_stat, x_all, edge_index, node_type,
+                    ip_index, flow_mask):
+        """Single-pass forward over a NeighborLoader batch.
 
-    def forward_all(self, seq, stat):
-        """Single-pass forward returning (logits, fused_hidden, views)."""
-        views, h = self.encode_and_fuse(seq, stat)
+        Encodes the three views, fuses them, and returns
+        (logits, fused_hidden, views) so the classifier, the alignment loss
+        and the decision-boundary regularizer share one encoder pass.
+
+        Args:
+            x_seq:   (B, 100, 3) packet sequences of flow nodes in the batch.
+            x_stat:  (B, 23) statistical features of flow nodes in the batch.
+            x_all:   (B_all, 23) features of all sampled nodes (flows + IPs).
+            edge_index: (2, E) sampled heterogeneous edges.
+            node_type:  (B_all,) 0 = flow, 1 = IP.
+            ip_index:   (B_all,) global embedding id for IP nodes (-1 else).
+            flow_mask:  (B_all,) boolean mask selecting flow nodes.
+        """
+        h_seq = self.seq_encoder(x_seq)
+        h_stat = self.stat_encoder(x_stat)
+        h_all = self.inter_encoder(x_all, edge_index, node_type, ip_index)
+        h_inter = h_all[flow_mask]
+        views = torch.stack([h_seq, h_stat, h_inter], dim=1)
+        h, _ = self.fuse_views(views)
         logits = self.classifier(h).squeeze(-1)
         return logits, h, views
 
-    def fused_hidden(self, seq, stat):
-        """Return the fused pre-classifier representation h.
+    def forward(self, x_seq, x_stat, x_all, edge_index, node_type,
+                ip_index, flow_mask):
+        logits, _, _ = self.forward_all(x_seq, x_stat, x_all, edge_index,
+                                        node_type, ip_index, flow_mask)
+        return logits
 
-        Used by the decision-boundary regularization term to measure the
-        local curvature / smoothness of the decision function around each
-        flow (paper, Sec. 5.1, Eq. (8)).
-        """
-        _, h = self.encode_and_fuse(seq, stat)
-        return h
-
-    def get_views(self, seq, stat):
-        """Return stacked view representations for alignment loss computation."""
-        with torch.no_grad():
-            h_seq, h_stat, h_inter = self.encode_views(seq, stat)
-        return torch.stack([h_seq, h_stat, h_inter], dim=1)
-
-    def get_attention_weights(self, seq, stat):
-        """Return per-view attention weights for interpretability."""
+    def get_attention_weights(self, x_seq, x_stat, x_all, edge_index,
+                              node_type, ip_index, flow_mask):
+        """Per-flow view weights for interpretability (paper, Sec. 5.5)."""
         if self.fusion not in ('attn', 'attn_align'):
             return None
         with torch.no_grad():
-            h_seq, h_stat, h_inter = self.encode_views(seq, stat)
-            _, weights = self.fuse_views(h_seq, h_stat, h_inter)
-        return weights  # (batch, 3): [seq_weight, stat_weight, inter_weight]
+            h_seq = self.seq_encoder(x_seq)
+            h_stat = self.stat_encoder(x_stat)
+            h_all = self.inter_encoder(x_all, edge_index, node_type, ip_index)
+            h_inter = h_all[flow_mask]
+            views = torch.stack([h_seq, h_stat, h_inter], dim=1)
+            _, weights = self.fuse_views(views)
+        return weights  # (B, 3): [sequence, statistical, interaction]

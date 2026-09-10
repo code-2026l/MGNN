@@ -12,11 +12,10 @@ if [ ! -d .venv ]; then
 fi
 source .venv/bin/activate
 
-# Install PyTorch for the target accelerator first (adjust the index if the
-# cluster uses a custom wheel mirror), then the rest.
+# PyTorch 2.1 (CUDA 12.1) as stated in the paper's implementation section.
 pip install --upgrade pip
-pip install torch --index-url https://download.pytorch.org/whl/cu124
-pip install torch-geometric
+pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+pip install torch-geometric>=2.4.0
 pip install -r requirements.txt
 
 echo "[setup_env] done. Activate with: source .venv/bin/activate"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download and preprocess all three real datasets (best-effort).
+# Download and preprocess all three benchmark datasets.
 # Missing raw CSVs can be dropped into data/ and this script will pick them up.
 set -euo pipefail
 cd "$(dirname "$0")/.."

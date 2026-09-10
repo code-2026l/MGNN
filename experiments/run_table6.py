@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
-Table 6: MGNN fusion strategy comparison on REAL preprocessed data.
+Table 6: MGNN fusion-strategy comparison (paper, Table 6 / Sec. 5.4).
 
-Compares concat / avg / attn / attn_align and reports F1, FPR, P, R, AUC,
-MCC per dataset. Requires the preprocessed .pt files (prepared by
-src.data.dataset.prepare_*). No synthetic fallback — if data is missing the
-script fails loudly instead of silently producing meaningless numbers.
+Compares the four fusion strategies -- concat, avg, attention (attn),
+attention with alignment (attn_align) -- on the real benchmark datasets,
+following the paper's protocol exactly:
+
+  - chronological 60/20/20 split (first 60% of flows by time for training,
+    20% validation, 20% testing; no cross-split graph edges);
+  - benign flows undersampled to a 1:3 anomaly:benign ratio in training;
+  - Adam (lr=1e-3, weight_decay=1e-5), batch size 2048, early stopping
+    with patience 10, 5 seeds {42,0,123,7,2024};
+  - heterogeneous flow/IP graph with temporal / volume / communication
+    edges, all thresholds data-driven.
 
 Usage:
-    python experiments/run_table6.py [--data-dir DIR] [--runs 5] [--epochs 30]
+    python experiments/run_table6.py [--data-dir DIR] [--runs 5]
+                                     [--epochs 30] [--datasets ...] [--no-amp]
 """
 
 import argparse
@@ -16,49 +24,29 @@ import json
 import time
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset, TensorDataset
 
-from src.models.mgnn import MGNN
 from src.utils.config import add_common_args, parse_device, SEEDS
-from src.utils.training import train_epoch_mgnn, evaluate_mgnn
-from src.utils.metrics import format_metrics
 
 
-def _chrono_split(labels, fracs=(0.6, 0.2, 0.2)):
-    """Stratified random 60/20/20 split with balanced class distribution.
+def _chrono_split(timestamps, fracs=(0.6, 0.2, 0.2)):
+    """Chronological 60/20/20 split (paper, Sec. 5.1).
 
-    The datasets are returned per-day/per-class, so a naive proportion cut
-    on the raw row order concentrates all attack classes into the tail, giving
-    a test set with a heavily skewed anomaly ratio. To reproduce the paper's
-    reported F1/FPR (computed on a test set retaining the original anomaly
-    rate), we use a deterministic stratified shuffle so train/val/test each
-    preserve the overall class distribution. Seed is fixed for reproducibility.
+    The first 60% of flows (by arrival time) form the training set, the next
+    20% the validation set and the last 20% the test set, preserving temporal
+    ordering so future flows never influence predictions on past ones.
     """
-    n = len(labels)
-    idx = np.arange(n)
-    rng = np.random.RandomState(0)
-    # Stratify by class label
-    train_idx, val_idx, test_idx = [], [], []
-    for cls in np.unique(labels):
-        ids = idx[labels == cls]
-        ids = rng.permutation(ids)
-        n_tr = int(len(ids) * fracs[0])
-        n_va = int(len(ids) * fracs[1])
-        train_idx.append(ids[:n_tr])
-        val_idx.append(ids[n_tr:n_tr + n_va])
-        test_idx.append(ids[n_tr + n_va:])
-    train_idx = np.concatenate(train_idx)
-    val_idx = np.concatenate(val_idx)
-    test_idx = np.concatenate(test_idx)
-    return train_idx, val_idx, test_idx
+    order = np.argsort(timestamps, kind="stable")
+    n = len(order)
+    n_tr = int(n * fracs[0])
+    n_va = int(n * fracs[1])
+    return order[:n_tr], order[n_tr:n_tr + n_va], order[n_tr + n_va:]
 
 
 def _undersample_train(train_idx, labels, ratio=3):
-    """Undersample benign flows in the training split to 1:ratio anomaly:benign.
+    """Undersample benign flows to a 1:ratio anomaly:benign ratio.
 
-    Matches the paper: training benign flows are undersampled to a 1:3
-    anomaly-to-benign ratio. The validation/test splits keep the original
-    distribution. Uses a deterministic permutation seeded by the run seed.
+    Applied to the training split only; the validation/test sets retain the
+    original class distribution (paper, Sec. 5.1).
     """
     y = labels[train_idx]
     anom = y > 0.5
@@ -67,76 +55,75 @@ def _undersample_train(train_idx, labels, ratio=3):
     rng = np.random.RandomState(0)
     benign_ids = np.where(~anom)[0]
     keep = rng.choice(benign_ids, n_benign_keep, replace=False)
-    sel = train_idx[np.concatenate([np.where(anom)[0], np.sort(keep)])]
-    return sel
+    return train_idx[np.concatenate([np.where(anom)[0], np.sort(keep)])]
 
 
-def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256,
-               hidden=128, paper=False,
-               datasets=("cic_ids2017", "unsw_nb15", "cse_ids2018"),
-               amp=False, compile_model=False):
-    """Table-6 fusion comparison.
-
-    A100 optimisations are enabled up front: cuDNN autotuning (benchmark mode)
-    picks the fastest convolution/LSTM kernels, and torch.compile fuses the
-    per-batch graph. ``amp`` additionally switches the training inside each
-    epoch to bf16 automatic mixed precision (tensor-core speedup,
-    near-lossless on A100). Compilation is best-effort and falls back to
-    eager execution if the dynamic GAT k-NN graph is not capturable.
-    """
+def run_table6(data_dir, device, runs=5, epochs=30, batch_size=2048,
+               hidden=128, datasets=("cic_ids2017", "unsw_nb15",
+                                     "cse_ids2018"),
+               amp=True):
+    """Table-6 fusion comparison on real data with the paper's protocol."""
     torch.backends.cudnn.benchmark = True
     from src.data.dataset import load_pt_data
-    from src.data.dataset import SEQ_LEN, STAT_DIM
+    from src.data.graph import (build_hetero_graph, make_pyg_data,
+                                make_neighbor_loader)
+    from src.models.mgnn import MGNN
+    from src.utils.training import train_epoch_mgnn, evaluate_mgnn
+    from src.utils.metrics import format_metrics
 
     results = {}
     for ds_name in datasets:
-        pt_name = f"{ds_name}.pt"
-        data = load_pt_data(data_dir, pt_name)  # raises if missing
+        data = load_pt_data(data_dir, f"{ds_name}.pt")
         seq, stat, labels = data["seq"], data["stat"], data["labels"]
+        ts = data["timestamp"].numpy()
+        src_ip = data["src_ip"].numpy()
+        dst_ip = data["dst_ip"].numpy()
+        n_ips_global = int(data["n_unique_ips"])
         n = len(labels)
-        seq_len = seq.size(1)
-        stat_dim = stat.size(1)
 
-        if paper:
-            # Reproduce the paper: chronological 60/20/20 + 1:3 undersampling.
-            train_idx, val_idx, test_idx = _chrono_split(labels)
-            train_idx = _undersample_train(train_idx, labels, ratio=3)
-            print(f"\n[paper] {ds_name}: N={n} "
-                  f"train(u/samp)={len(train_idx)} val={len(val_idx)} "
-                  f"test={len(test_idx)} anom(train)="
-                  f"{labels[train_idx].mean().item()*100:.1f}%")
-        else:
-            # Deterministic random shuffle with hold-out test set.
-            rng = np.random.RandomState(0)
-            perm = rng.permutation(n)
-            n_test = max(int(n * 0.3), 1)
-            test_idx = perm[:n_test]
-            train_idx = perm[n_test:]
-            train_idx, val_idx = train_idx[:int(len(train_idx)*0.85)], \
-                train_idx[int(len(train_idx)*0.85):]
-            print(f"\n=== {ds_name}: N={n} train={len(train_idx)} "
-                  f"val={len(val_idx)} test={len(test_idx)}")
+        train_idx, val_idx, test_idx = _chrono_split(ts)
+        train_sel = _undersample_train(train_idx, labels.numpy(), ratio=3)
+        print(f"\n[{ds_name}] N={n} ips={n_ips_global} "
+              f"train={len(train_idx)} (u/samp={len(train_sel)}) "
+              f"val={len(val_idx)} test={len(test_idx)} "
+              f"anom(train)={labels[train_sel].mean().item()*100:.1f}% "
+              f"anom(test)={labels[test_idx].mean().item()*100:.1f}%")
 
-        def _loader(idx, shuffle):
-            """Vectorised pre-indexing + worker-parallel loading.
+        # Per-split heterogeneous graphs (edges stay within each split).
+        t0 = time.time()
+        train_graph = build_hetero_graph(stat[train_idx], labels[train_idx],
+                                         src_ip[train_idx], dst_ip[train_idx],
+                                         ts[train_idx])
+        val_graph = build_hetero_graph(stat[val_idx], labels[val_idx],
+                                       src_ip[val_idx], dst_ip[val_idx],
+                                       ts[val_idx])
+        test_graph = build_hetero_graph(stat[test_idx], labels[test_idx],
+                                        src_ip[test_idx], dst_ip[test_idx],
+                                        ts[test_idx])
+        print(f"  graphs: train {train_graph['n_edges']} edges, "
+              f"val {val_graph['n_edges']}, test {test_graph['n_edges']} "
+              f"({time.time()-t0:.0f}s)")
 
-            Using Subset(ds, idx) with the default num_workers=0 forces the
-            loader to run one single-sample gather per element inside the
-            training process, which starves the GPU (observed ~11% util while
-            a CPU core sat at ~100%). Indexing eagerly once keeps the batches
-            as fast contiguous slices, and the worker pool overlaps CPU
-            fetching with GPU compute on the A100.
-            """
-            ds = TensorDataset(seq[torch.as_tensor(idx, dtype=torch.long)],
-                               stat[torch.as_tensor(idx, dtype=torch.long)],
-                               labels[torch.as_tensor(idx, dtype=torch.long)])
-            return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
-                              num_workers=8, pin_memory=True,
-                              persistent_workers=True, prefetch_factor=4)
+        train_data = make_pyg_data(train_graph, seq=seq[train_idx],
+                                   stat=stat[train_idx])
+        val_data = make_pyg_data(val_graph, seq=seq[val_idx],
+                                 stat=stat[val_idx])
+        test_data = make_pyg_data(test_graph, seq=seq[test_idx],
+                                  stat=stat[test_idx])
 
-        train_loader = _loader(train_idx.tolist(), True)
-        val_loader = _loader(val_idx.tolist(), False)
-        test_loader = _loader(test_idx.tolist(), False)
+        # Map the undersampled flows to positions inside the train subgraph.
+        pos = {int(i): p for p, i in enumerate(train_idx)}
+        train_seeds = np.array([pos[int(i)] for i in train_sel])
+        val_seeds = np.arange(len(val_idx))
+        test_seeds = np.arange(len(test_idx))
+
+        train_loader = make_neighbor_loader(train_data, train_seeds,
+                                            batch_size=batch_size,
+                                            shuffle=True)
+        val_loader = make_neighbor_loader(val_data, val_seeds,
+                                          batch_size=batch_size)
+        test_loader = make_neighbor_loader(test_data, test_seeds,
+                                           batch_size=batch_size)
 
         ds_results = {}
         for fusion in ["concat", "avg", "attn", "attn_align"]:
@@ -145,18 +132,12 @@ def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256,
             for seed in SEEDS[:runs]:
                 torch.manual_seed(seed)
                 np.random.seed(seed)
-                model = MGNN(fusion=fusion, seq_len=seq_len, stat_dim=stat_dim,
-                             hidden=hidden, use_gat=True).to(device)
-                if compile_model:
-                    _m = model
-                    try:
-                        model = torch.compile(model, dynamic=True)
-                    except Exception as e:  # keep eager on capture failure
-                        print(f"    [compile] skipped ({e}); using eager")
-                        model = _m
+                model = MGNN(fusion=fusion, seq_len=seq.size(1),
+                             stat_dim=stat.size(1), hidden=hidden,
+                             n_ips=n_ips_global, gat_heads=4).to(device)
                 opt = torch.optim.Adam(model.parameters(), lr=1e-3,
                                        weight_decay=1e-5)
-                best_f1, best_state = -1.0, None
+                best_f1, best_state, bad = -1.0, None, 0
                 for ep in range(epochs):
                     _ = train_epoch_mgnn(
                         model, train_loader, opt, device,
@@ -166,8 +147,13 @@ def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256,
                         best_f1 = vm["f1"]
                         best_state = {k: v.clone()
                                       for k, v in model.state_dict().items()}
+                        bad = 0
+                    else:
+                        bad += 1
                     print(f"    [r{seed}] ep{ep+1}/{epochs} "
                           f"bestF1={best_f1:.4f}", flush=True)
+                    if bad >= 10:  # early stopping, patience 10
+                        break
                 if best_state is not None:
                     model.load_state_dict(best_state)
                 metrics_list.append(evaluate_mgnn(test_loader, model, device))
@@ -183,22 +169,12 @@ def run_table6(data_dir, device, runs=5, epochs=30, batch_size=256,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Fusion strategy comparison (real data)")
     add_common_args(parser)
-    parser.add_argument("--paper", action="store_true",
-                        help="Reproduce paper: chronological 60/20/20 split "
-                             "with 1:3 benign undersampling.")
     parser.add_argument("--datasets", type=str, default=None,
                         help="Comma-separated dataset names to run "
-                             "(default: all of cic_ids2017,unsw_nb15,"
-                             "cse_ids2018).")
-    parser.add_argument("--amp", action="store_true",
-                        help="Use bf16 automatic mixed precision inside each "
-                             "epoch (A100 tensor-core speedup, near-lossless).")
-    parser.add_argument("--compile", dest="compile_model",
-                        action="store_true", default=False,
-                        help="(opt-in) Enable torch.compile graph compilation. "
-                             "Measured on A100 it is ~5%% slower than eager for "
-                             "this dynamic k-NN architecture, so it is off by "
-                             "default; pass --compile to enable.")
+                             "(default: cic_ids2017,unsw_nb15,cse_ids2018).")
+    parser.add_argument("--no-amp", dest="amp", action="store_false",
+                        default=True,
+                        help="Disable bf16 automatic mixed precision.")
     args = parser.parse_args()
     device = parse_device(args)
     datasets = None if args.datasets is None else \
@@ -206,8 +182,7 @@ if __name__ == "__main__":
     t0 = time.time()
     res = run_table6(args.data_dir, device, runs=args.runs,
                      epochs=args.epochs, batch_size=args.batch_size,
-                     hidden=args.hidden, paper=args.paper, datasets=datasets,
-                     amp=args.amp, compile_model=args.compile_model)
+                     hidden=args.hidden, datasets=datasets, amp=args.amp)
     print(f"\n{'='*60}\nTotal {time.time()-t0:.0f}s")
     print(json.dumps(res, indent=2, default=str))
     with open("table6_results.json", "w") as f:

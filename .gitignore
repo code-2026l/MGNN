@@ -13,10 +13,9 @@ build/
 
 # Results / checkpoints
 checkpoints/
+results/
 *.pth
 *.json
-!results/
-!results/*.json
 
 # LaTeX auxiliary
 *.aux
@@ -52,6 +51,7 @@ venv/
 .venv/
 env/
 .env
+pip_cache/
 
 # Jupyter
 .ipynb_checkpoints/

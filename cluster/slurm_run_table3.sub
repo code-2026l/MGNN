@@ -17,9 +17,7 @@ source .venv/bin/activate
 export PYTHONPATH="$PWD"
 mkdir -p logs_table3
 
-for ds in cic_ids2017 unsw_nb15 cse_ids2018; do
-    echo "=== Table 3 on $ds ==="
-    python experiments/run_table3.py \
-        --data-dir data --dataset "$ds" \
-        --runs 5 --epochs 200 --k 5 --hidden 128 --device cuda:0
-done
+# Paper, Table 8: SOTA comparison on CIC-IDS2017 (70/30 chronological split).
+python experiments/run_table3.py \
+    --data-dir data --dataset cic_ids2017 \
+    --runs 5 --epochs 100 --hidden 128 --device cuda:0

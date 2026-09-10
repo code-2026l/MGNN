@@ -35,8 +35,8 @@ def add_common_args(parser):
                         help='Random seeds for repeated runs.')
     parser.add_argument('--runs', type=int, default=5,
                         help='Number of repeated runs (uses first N seeds).')
-    parser.add_argument('--batch-size', type=int, default=256,
-                        help='Training batch size.')
+    parser.add_argument('--batch-size', type=int, default=2048,
+                        help='Training batch size (paper: 2048).')
     parser.add_argument('--epochs', type=int, default=30,
                         help='Number of training epochs.')
     parser.add_argument('--hidden', type=int, default=128,
